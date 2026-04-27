@@ -1,0 +1,32 @@
+# Pre-commit hooks for the satemshi-app PUBLIC repo.
+# These guard against accidentally committing personal data.
+# Install once: pip install pre-commit && pre-commit install
+
+repos:
+  # General hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  # Generic secret scanning (API keys, tokens, etc.)
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # Project-specific blocklist: catch personal-data leaks before they
+  # reach the public repo. Add new patterns here as the project grows.
+  - repo: local
+    hooks:
+      - id: no-personal-data
+        name: Block personal data in public repo
+        entry: scripts/check-no-personal-data.sh
+        language: script
+        pass_filenames: true

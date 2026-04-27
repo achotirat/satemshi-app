@@ -1,0 +1,40 @@
+# Satemshi App — instance configuration template.
+# Copy this file to config.yaml and edit. config.yaml is gitignored.
+
+# LLM tasks: each task picks one provider + one model. The webapp's
+# settings page lets you change these at runtime; this file just
+# provides the defaults on first run.
+tasks:
+  mood_question:
+    provider: ollama
+    model: qwen2.5:7b
+  link_summarize:
+    provider: ollama
+    model: qwen2.5:7b
+  entity_extract:
+    provider: claude
+    model: claude-sonnet-4-6
+  ingest_summary:
+    provider: claude
+    model: claude-sonnet-4-6
+
+# Vault git auto-commit settings (the webapp owns commits to the
+# vault repo so the working tree always stays clean).
+vault_git:
+  enabled: true
+  # Coalesce captures into one commit if they happen within this window.
+  coalesce_seconds: 300
+  # Auto-push to the vault's "origin" remote after each commit.
+  auto_push: true
+
+# Ingest pipeline schedule (handled by systemd timer in production;
+# this is for documentation / manual override).
+ingest:
+  cron: "0 2 * * *"   # 02:00 every day
+  lookback_days: 1    # ingest yesterday by default
+
+# Daily Notes section markers — keep in sync with the vault's
+# CLAUDE.md "Daily Notes 2-zone convention".
+daily_notes:
+  start_marker: "<!-- captures:start -->"
+  end_marker: "<!-- captures:end -->"

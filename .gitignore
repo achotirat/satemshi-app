@@ -1,0 +1,41 @@
+# Instance configuration (NEVER commit — contains personal vault path, model selections)
+config.yaml
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+
+# Application runtime data (NEVER commit — personal data lives here)
+data/
+logs/
+cache/
+sessions/
+*.sqlite
+*.sqlite3
+*.db
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
