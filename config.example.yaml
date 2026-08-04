@@ -1,6 +1,59 @@
 # Satemshi App — instance configuration template.
 # Copy this file to config.yaml and edit. config.yaml is gitignored.
 
+# Timezone that decides what "today" means for captures and for the
+# photo sweep. Everything the bot writes is stamped in this zone.
+timezone: Asia/Bangkok
+
+# The RAW zone of a daily note. The LINE bot writes here verbatim,
+# before any LLM touches the text; the nightly ingest reads this zone
+# and promotes it into the wiki. Nothing outside these markers is ever
+# modified — the rest of the note is the user's freehand journal.
+raw:
+  daily_notes_dir: "Daily Notes"
+  heading: "## RAW"
+  start_marker: "<!-- raw:start -->"
+  end_marker: "<!-- raw:end -->"
+
+# LINE Bot capture channel.
+line_bot:
+  enabled: true
+  # Path the webhook is served on. Register
+  # https://<your-host>{webhook_path} in the LINE Developers console.
+  webhook_path: /line/webhook
+  # Only these LINE user ids may write to the vault. Send "whoami" to
+  # the bot to find yours. Empty means anyone who can reach the
+  # webhook — fine behind Tailscale, risky when publicly exposed.
+  allowed_user_ids: []
+  # Where in-progress conversations are parked. Relative paths resolve
+  # against the working directory, never into the vault.
+  session_dir: sessions
+  # Abandon a half-finished capture after this long, so tomorrow's
+  # first message is not read as an answer to yesterday's question.
+  session_ttl_seconds: 1800
+  # The follow-ups the bot asks after you describe an event. Asked in
+  # order, one per message; "-" skips one, "done" finishes early.
+  event_slots:
+    - key: when
+      question: "When did it happen? (e.g. 14:30, morning, all day)"
+    - key: where
+      question: "Where was it?"
+    - key: who
+      question: "Who was there? (comma-separated)"
+    - key: notes
+      question: "Anything else worth remembering?"
+
+# Photos.
+photos:
+  # Where images sent to the bot are filed, relative to VAULT_PATH.
+  # {yyyy}, {mm} and {dd} expand from the photo's own capture date.
+  attachments_dir: "Attachments/{yyyy}/{mm}"
+  # Extra directories the "photos" command sweeps for pictures taken
+  # today — a phone sync folder, a camera import directory. Read-only:
+  # the sweep records what it finds, it never moves or edits them.
+  source_dirs: []
+  extensions: [".jpg", ".jpeg", ".png", ".heic", ".webp"]
+
 # LLM tasks: each task picks one provider + one model. The webapp's
 # settings page lets you change these at runtime; this file just
 # provides the defaults on first run.
