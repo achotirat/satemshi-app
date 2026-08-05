@@ -2,7 +2,7 @@
 
 A personal assistant + second brain that **captures** moments during the day (links, mood, people met, priorities, to-buy list) and **ingests** them into an Obsidian vault as a structured wiki — using a swappable LLM backend (local Ollama, Claude API, or other providers) per task.
 
-> Status: **Phase 0 — repo skeleton.** No application code yet. See `docs/foundation.md` (forthcoming) for the architecture blueprint.
+> Status: **Phase 1 — first capture channel.** A LINE Bot captures today's events and photos into the vault's RAW zone. See [`docs/line-bot.md`](docs/line-bot.md).
 
 ## Why this exists
 
@@ -25,35 +25,45 @@ The framework is sharable. The data is yours.
 ## Architecture (planned)
 
 ```
-Webapp (FastAPI + HTMX) ──▶ Capture API ──▶ Vault Writer ──▶ Daily Notes/<date>.md
-                                                                    │
-                                                       cron @ 02:00 │
-                                                                    ▼
-                                                       Ingest Pipeline ──▶ Wiki/
-                                                              │
-                                                              └──▶ LLM Gateway (Ollama / Claude / ...)
+LINE Bot ──────────────┐
+                       ├──▶ Capture API ──▶ Vault Writer ──▶ Daily Notes/<date>.md
+Webapp (FastAPI + HTMX)┘                          │                    │
+                                                  ▼                    │
+                                        Attachments/<yyyy>/<mm>/       │
+                                                                       │
+                                                          cron @ 02:00 │
+                                                                       ▼
+                                                          Ingest Pipeline ──▶ Wiki/
+                                                                 │
+                                                                 └──▶ LLM Gateway (Ollama / Claude / ...)
 ```
 
 See `docs/foundation.md` for the full picture (forthcoming).
 
 ## Status & phasing
 
-- **Phase 0 (current):** repo skeleton, license, secret-scan hooks, vault conventions documented.
-- **Phase 1:** capture skeleton (links, priorities, to-buy list — no LLM yet).
+- **Phase 0 (done):** repo skeleton, license, secret-scan hooks, vault conventions documented.
+- **Phase 1 (current):** capture skeleton, no LLM yet. The [LINE Bot](docs/line-bot.md) captures events and photos into the daily note's RAW zone; links, priorities and the to-buy list follow.
 - **Phase 2:** LLM-powered captures (mood check-in question generator, people-met entity suggestions).
 - **Phase 3:** nightly ingest pipeline (wiki summary + entity extraction + index updates).
 
 Each phase has its own design spec and implementation plan.
 
-## Getting started (when there is code)
+## Getting started
 
 ```bash
 git clone https://github.com/<your-fork>/satemshi-app
 cd satemshi-app
-cp .env.example .env           # edit with your vault path, LLM keys
+cp .env.example .env           # vault path + LINE channel credentials
 cp config.example.yaml config.yaml
-# (instructions to run will appear in Phase 1)
+pip install -e ".[dev]"
+pytest
+python -m satemshi             # serves /line/webhook and /healthz
 ```
+
+Then point your LINE channel's webhook at `https://<your-host>/line/webhook`
+— see [`docs/line-bot.md`](docs/line-bot.md) for the full setup, the
+command list, and how photos are found.
 
 ## License
 
