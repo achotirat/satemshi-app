@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
@@ -34,6 +35,23 @@ logger = logging.getLogger(__name__)
 
 SKIP_TOKENS = {"-", "skip", "ข้าม"}
 NEXT_TOKENS = {"next", "ถัดไป"}
+SPENT_COMMANDS = {"spent", "spend", "จ่าย"}
+SLIP_TOKENS = {"slip", "สลิป"}
+
+# The three things an expense needs, asked in this order (minus whatever
+# was already said inline or is disabled in config).
+EXPENSE_ORDER = ("amount", "category", "what")
+
+# "120", "1,250.50", "฿120", "120 baht lunch" — an amount, an optional
+# currency mark, and whatever text follows. "7-eleven run" must NOT
+# match (the digits have to stand alone), and neither must "120,50" —
+# commas are only thousands separators, so a misplaced one must not
+# silently become a 100x amount.
+_AMOUNT_RE = re.compile(
+    r"^฿?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
+    r"(?:\s*(?:฿|บาท|baht|thb))?(?:\s+(.+))?$",
+    re.IGNORECASE,
+)
 
 HELP_TEXT = (
     "Send me anything about today and it lands in your vault's RAW zone.\n\n"
@@ -43,6 +61,8 @@ HELP_TEXT = (
     "Commands:\n"
     "• today — read back today's RAW zone\n"
     "• photos — find today's photos, then ask about each one\n"
+    "• spent <amount> <what> — record an expense, then pick a category\n"
+    "• expenses — today's spending by category\n"
     "• note <text> — capture verbatim, no questions\n"
     "• next — skip to the next photo\n"
     "• done — finish the current capture now\n"
@@ -140,6 +160,12 @@ class CaptureBot:
             if command == "photos":
                 await self._reply(event, self._sweep_photos(user_id))
                 return
+            if command in SPENT_COMMANDS:
+                await self._start_expense(event, user_id, argument)
+                return
+            if command == "expenses":
+                await self._reply(event, self._expenses_summary())
+                return
             if command == "cancel":
                 if user_id:
                     self.sessions.clear(user_id)
@@ -160,13 +186,19 @@ class CaptureBot:
                     )
                 elif session.kind == "photo":
                     await self._finish_photo_queue(event, session)
+                elif session.kind == "expense":
+                    await self._finalise_expense(event, session)
                 else:
                     await self._finalise(event, session)
                 return
 
         if session is not None:
+            if self._is_redelivery(event, session):
+                return
             if session.kind == "photo":
                 await self._answer_photo_slot(event, session, body)
+            elif session.kind == "expense":
+                await self._answer_expense_slot(event, session, body)
             else:
                 await self._answer_slot(event, session, body)
             return
@@ -174,6 +206,21 @@ class CaptureBot:
         await self._start_capture(
             event, user_id, argument if command == "event" else body
         )
+
+    def _is_redelivery(self, event: dict, session: Session) -> bool:
+        """LINE redelivers webhook events. Mid-conversation, consuming
+        the same event twice would shift every later answer by one slot,
+        so an id we have already consumed — or the event that started
+        the session — is dropped here. The id is stamped on the session
+        now and persisted by whichever save the dispatch path performs.
+        """
+        event_id = _entry_id(event)
+        if not event_id:
+            return False
+        if event_id in (session.entry_id, session.last_event_id):
+            return True
+        session.last_event_id = event_id
+        return False
 
     async def _start_capture(
         self, event: dict, user_id: str | None, title: str
@@ -293,13 +340,27 @@ class CaptureBot:
         session = self.sessions.get(user_id) if user_id else None
         slots = self.config.line_bot.event_slots
 
-        if session is not None and session.kind == "photo":
+        if session is not None and self._is_redelivery(event, session):
+            return
+
+        if (
+            session is not None
+            and session.kind == "photo"
+            and session.queue
+            and session.queue[0].get("mode") != "expense"
+        ):
             # A location dropped while going through photos answers the
             # question on the table — usually "where was this taken?".
+            # Mid-slip it is NOT the amount, so it falls through to a
+            # plain location entry instead.
             await self._answer_photo_slot(event, session, place)
             return
 
-        if session is not None and session.slot_index < len(slots):
+        if (
+            session is not None
+            and session.kind == "event"
+            and session.slot_index < len(slots)
+        ):
             # A location sent mid-capture is the answer to "where".
             session.answers["where"] = place
             if message.get("address"):
@@ -376,7 +437,20 @@ class CaptureBot:
         if user_id is None or not slots:
             return ""
 
-        keys = {slot.key for slot in slots}
+        existing = self.sessions.get(user_id)
+        if existing is not None and existing.kind != "photo":
+            return (
+                "\n\nYou're mid-capture — finish it (“done”) or drop it "
+                "(“cancel”), then run “photos” again to go through these."
+            )
+        if existing is not None:
+            # Re-running "photos" mid-queue: keep what has been answered
+            # for the current photo before the queue is rebuilt.
+            self._store_photo_answers(existing)
+
+        # Answered = carrying any photo-slot key or any expense field
+        # (a slip keeps its photo kind but is answered all the same).
+        keys = {slot.key for slot in slots} | set(EXPENSE_ORDER)
         queue = [
             {
                 "anchor": entry.anchor,
@@ -400,7 +474,8 @@ class CaptureBot:
         self.sessions.save(session)
         return (
             f"\n\n{len(queue)} still unanswered — let's go through them.\n"
-            f"(“-” skips a question, “next” skips the photo, “done” stops)\n\n"
+            f"(“-” skips a question, “next” skips the photo, “slip” records "
+            f"it as an expense, “done” stops)\n\n"
             f"{self._photo_prompt(session)}"
         )
 
@@ -419,6 +494,26 @@ class CaptureBot:
         if cleaned.lower() in NEXT_TOKENS:
             await self._advance_photo(event, session, skipped=True)
             return
+
+        photo = session.queue[0]
+        if cleaned.lower() in SLIP_TOKENS:
+            if photo.get("mode") == "expense":
+                # A double-sent "slip" is not the amount — re-ask.
+                pending = _pending_of(photo)
+                if pending:
+                    await self._reply(
+                        event,
+                        "Already on it.\n" + self._expense_question(pending[0]),
+                    )
+                    return
+                await self._advance_photo(event, session)
+                return
+            await self._switch_photo_to_expense(event, session, photo)
+            return
+        if photo.get("mode") == "expense":
+            await self._answer_photo_expense(event, session, cleaned)
+            return
+
         if cleaned.lower() not in SKIP_TOKENS:
             session.answers[slots[session.slot_index].key] = cleaned
         session.slot_index += 1
@@ -430,11 +525,66 @@ class CaptureBot:
         self.sessions.save(session)
         await self._reply(event, slots[session.slot_index].question)
 
+    async def _switch_photo_to_expense(
+        self, event: dict, session: Session, photo: dict
+    ) -> None:
+        """This photo is a payment slip: switch its remaining questions
+        to the expense set. The answers still land on the photo's own
+        RAW entry, next to the file link — and anything already on that
+        entry (a slip answered halfway on an earlier run) is not asked
+        again.
+        """
+        day = date.fromisoformat(photo["day"])
+        on_entry = next(
+            (
+                entry.fields
+                for entry in self.vault.entries(day)
+                if entry.anchor == photo["anchor"]
+            ),
+            {},
+        )
+        pending = [key for key in self._expense_pending({}) if key not in on_entry]
+        if not pending:
+            await self._reply(
+                event, "That one already has its expense answers — moving on."
+            )
+            await self._advance_photo(event, session)
+            return
+
+        photo["mode"] = "expense"
+        photo["pending"] = ",".join(pending)
+        self.sessions.save(session)
+        await self._reply(
+            event,
+            "Recording it as an expense.\n" + self._expense_question(pending[0]),
+        )
+
+    async def _answer_photo_expense(
+        self, event: dict, session: Session, answer: str
+    ) -> None:
+        photo = session.queue[0]
+        pending = _pending_of(photo)
+        if not pending:
+            await self._advance_photo(event, session)
+            return
+        self._apply_expense_answer(session.answers, pending, answer)
+        photo["pending"] = ",".join(pending)
+
+        if not pending:
+            await self._advance_photo(event, session)
+            return
+        self.sessions.save(session)
+        await self._reply(event, self._expense_question(pending[0]))
+
     async def _advance_photo(
         self, event: dict, session: Session, skipped: bool = False
     ) -> None:
-        """Write the answers onto the current photo, then move to the next."""
-        written = self._store_photo_answers(session)
+        """Write the answers onto the current photo, then move to the next.
+
+        "next" means *skip this photo*: whatever was answered for it is
+        discarded, not half-recorded.
+        """
+        written = False if skipped else self._store_photo_answers(session)
         session.queue.pop(0)
         session.slot_index = 0
         session.answers = {}
@@ -445,7 +595,12 @@ class CaptureBot:
             return
 
         self.sessions.save(session)
-        prefix = "Skipped." if skipped else "Saved."
+        if skipped:
+            prefix = "Skipped."
+        elif written:
+            prefix = "Saved."
+        else:
+            prefix = "Nothing new for that one."
         await self._reply(event, f"{prefix}\n\n{self._photo_prompt(session)}")
 
     async def _finish_photo_queue(self, event: dict, session: Session) -> None:
@@ -467,6 +622,191 @@ class CaptureBot:
             photo["anchor"],
             self._with_source(dict(session.answers), session.user_id),
         )
+
+    # -- expenses ------------------------------------------------------
+
+    def _expense_pending(self, answers: dict[str, str]) -> list[str]:
+        return [
+            key
+            for key in EXPENSE_ORDER
+            if key not in answers
+            and not (key == "category" and not self.config.line_bot.expense_categories)
+        ]
+
+    def _expense_question(self, key: str) -> str:
+        if key == "amount":
+            return "How much was it? (just the number, e.g. 120 or 1,250.50)"
+        if key == "category":
+            categories = self.config.line_bot.expense_categories
+            listing = "  ".join(
+                f"{index + 1} {name}" for index, name in enumerate(categories)
+            )
+            return f"Category? Reply a number or a name:\n{listing}"
+        return "What was it for?"
+
+    def _resolve_category(self, answer: str) -> str:
+        """A number picks from the list, a name matches it, anything
+        else is kept as a free-form category."""
+        categories = self.config.line_bot.expense_categories
+        cleaned = answer.strip()
+        # isdecimal, not isdigit: "²" is a digit int() rejects, while
+        # Thai numerals ("๓") are decimal and pick from the list fine.
+        if cleaned.isdecimal() and 1 <= int(cleaned) <= len(categories):
+            return categories[int(cleaned) - 1]
+        for name in categories:
+            if name.lower() == cleaned.lower():
+                return name
+        return cleaned
+
+    def _apply_expense_answer(
+        self, answers: dict[str, str], pending: list[str], answer: str
+    ) -> None:
+        key = pending.pop(0)
+        cleaned = answer.strip()
+        if cleaned.lower() in SKIP_TOKENS:
+            return
+        if key == "amount":
+            amount, rest = _parse_amount(cleaned)
+            answers["amount"] = amount or cleaned
+            # "120 for lunch" answers two questions at once.
+            if amount and rest and "what" in pending:
+                answers["what"] = rest
+                pending.remove("what")
+        elif key == "category":
+            answers["category"] = self._resolve_category(cleaned)
+        else:
+            answers[key] = cleaned
+
+    async def _start_expense(
+        self, event: dict, user_id: str | None, text: str
+    ) -> None:
+        if user_id and self.sessions.get(user_id) is not None:
+            # Starting a new flow would silently clobber the open one
+            # (one session per user) and lose its answers. Refuse.
+            await self._reply(
+                event,
+                "You're mid-capture — “done” finishes it, “cancel” drops "
+                "it. Then record the expense.",
+            )
+            return
+
+        answers: dict[str, str] = {}
+        amount, rest = _parse_amount(text.strip()) if text.strip() else (None, "")
+        if amount:
+            answers["amount"] = amount
+            if rest:
+                answers["what"] = rest
+        elif text.strip():
+            answers["what"] = text.strip()
+
+        pending = self._expense_pending(answers)
+        entry_id = _entry_id(event)
+
+        if user_id is None or not pending:
+            await self._write_expense(event, entry_id, answers, user_id)
+            return
+
+        session = Session(
+            user_id=user_id,
+            entry_id=entry_id,
+            title=answers.get("what", ""),
+            kind="expense",
+            answers=answers,
+            queue=[{"slot": key} for key in pending],
+        )
+        self.sessions.save(session)
+        await self._reply(event, self._expense_question(pending[0]))
+
+    async def _answer_expense_slot(
+        self, event: dict, session: Session, answer: str
+    ) -> None:
+        pending = [item["slot"] for item in session.queue]
+        if not pending:
+            await self._finalise_expense(event, session)
+            return
+        self._apply_expense_answer(session.answers, pending, answer)
+        session.queue = [{"slot": key} for key in pending]
+
+        if not pending:
+            await self._finalise_expense(event, session)
+            return
+        self.sessions.save(session)
+        await self._reply(event, self._expense_question(pending[0]))
+
+    async def _finalise_expense(self, event: dict, session: Session) -> None:
+        self.sessions.clear(session.user_id)
+        await self._write_expense(
+            event, session.entry_id, dict(session.answers), session.user_id
+        )
+
+    async def _write_expense(
+        self, event: dict, entry_id: str, answers: dict[str, str], user_id: str | None
+    ) -> None:
+        fields = dict(answers)
+        title = fields.pop("what", "") or "(expense)"
+        await self._write_and_confirm(
+            event,
+            RawEntry(
+                at=self._now(),
+                kind="expense",
+                title=title,
+                entry_id=entry_id,
+                fields=self._with_source(fields, user_id),
+            ),
+        )
+
+    def _expenses_summary(self) -> str:
+        today = self._now().date()
+        rows = [
+            entry
+            for entry in self.vault.entries(today)
+            if entry.kind == "expense"
+            # A slip keeps its photo kind; count it whichever expense
+            # field made it onto the entry (an amount can be skipped).
+            or "amount" in entry.fields
+            or "category" in entry.fields
+        ]
+        if not rows:
+            return (
+                f"No expenses recorded for {today.isoformat()} yet.\n"
+                "“spent 120 lunch” records one, and answering “slip” to a "
+                "photo records that slip as one."
+            )
+
+        total = 0.0
+        unparsed = 0
+        sums: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        detail: list[str] = []
+        for entry in rows:
+            category = entry.fields.get("category") or "uncategorized"
+            raw_amount = entry.fields.get("amount", "")
+            value = _to_number(raw_amount)
+            counts[category] = counts.get(category, 0) + 1
+            if value is None:
+                unparsed += 1
+            else:
+                total += value
+                sums[category] = sums.get(category, 0.0) + value
+            label = entry.fields.get("what") or entry.title
+            detail.append(
+                f"• {entry.time} — {raw_amount or '?'} {category} — {label}"
+            )
+
+        by_size = sorted(counts, key=lambda name: -sums.get(name, 0.0))
+        categories = "\n".join(
+            # "?" over a false 0 when no amount in it could be read.
+            f"{name}: {_fmt_amount(sums[name]) if name in sums else '?'} "
+            f"({counts[name]})"
+            for name in by_size
+        )
+        head = (
+            f"{today.isoformat()} — {len(rows)} expense(s), "
+            f"total {_fmt_amount(total)}"
+        )
+        if unparsed:
+            head += f" ({unparsed} without a readable amount)"
+        return f"{head}\n{categories}\n\n" + "\n".join(detail)
 
     # -- plumbing ------------------------------------------------------
 
@@ -513,6 +853,36 @@ class CaptureBot:
                 await self.client.push(user_id, text)
         except Exception:  # the capture is already on disk
             logger.exception("Could not reply to LINE event")
+
+
+def _pending_of(photo: dict) -> list[str]:
+    return [key for key in photo.get("pending", "").split(",") if key]
+
+
+def _parse_amount(text: str) -> tuple[str | None, str]:
+    """Split "120 lunch at the market" into ("120", "lunch at the market").
+
+    Returns ``(None, text)`` when the text doesn't start with a
+    stand-alone amount.
+    """
+    match = _AMOUNT_RE.match(text)
+    if match is None:
+        return None, text
+    return match.group(1).replace(",", ""), (match.group(2) or "").strip()
+
+
+def _to_number(raw: str) -> float | None:
+    try:
+        return float(raw.replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _fmt_amount(value: float) -> str:
+    """Whole amounts without decimals, fractional ones with two."""
+    if value == int(value):
+        return f"{int(value):,}"
+    return f"{value:,.2f}"
 
 
 def _photo_link(photo: Photo) -> str:

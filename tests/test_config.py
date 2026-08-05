@@ -101,3 +101,19 @@ def test_defaults_apply_without_a_config_file(tmp_path):
         "who",
         "notes",
     ]
+
+
+def test_scalar_expense_categories_are_rejected(tmp_path):
+    path = write_config(tmp_path, "line_bot:\n  expense_categories: food\n")
+
+    with pytest.raises(ConfigError, match="expense_categories"):
+        load_config(path, env={"VAULT_PATH": str(tmp_path / "vault")})
+
+
+def test_empty_expense_categories_disable_the_question(tmp_path):
+    config = load_config(
+        write_config(tmp_path, "line_bot:\n  expense_categories: []\n"),
+        env={"VAULT_PATH": str(tmp_path / "vault")},
+    )
+
+    assert config.line_bot.expense_categories == ()

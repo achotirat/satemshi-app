@@ -33,6 +33,10 @@ class Session:
     updated_at: float = 0.0
     kind: str = "event"
     queue: list[dict[str, str]] = field(default_factory=list)
+    # The webhook event id of the last message consumed as an answer.
+    # LINE redelivers events; seeing the same id again must not consume
+    # a second answer and shift the whole conversation off by one.
+    last_event_id: str = ""
 
 
 class SessionStore:

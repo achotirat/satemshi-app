@@ -17,7 +17,7 @@ from datetime import date
 from pathlib import Path
 
 from .config import RawConfig
-from .models import RawEntry
+from .models import RawEntry, flatten_text
 
 
 class VaultError(RuntimeError):
@@ -177,9 +177,9 @@ class VaultWriter:
             if "::" in line
         }
         additions = [
-            f"    - {key}:: {str(value).strip()}"
+            f"    - {key}:: {flatten_text(value)}"
             for key, value in fields.items()
-            if str(value).strip() and key not in existing
+            if flatten_text(value) and key not in existing
         ]
         if not additions:
             return False

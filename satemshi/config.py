@@ -31,6 +31,17 @@ DEFAULT_PHOTO_SLOTS: list[dict[str, str]] = [
     {"key": "what", "question": "What is it — and who's in it?"},
 ]
 
+DEFAULT_EXPENSE_CATEGORIES: tuple[str, ...] = (
+    "food",
+    "transport",
+    "groceries",
+    "household",
+    "health",
+    "fun",
+    "bills",
+    "other",
+)
+
 
 class ConfigError(RuntimeError):
     """Raised when configuration is missing or unusable."""
@@ -73,6 +84,7 @@ class LineBotConfig:
     session_ttl_seconds: int = 1800
     event_slots: tuple[EventSlot, ...] = ()
     photo_slots: tuple[EventSlot, ...] = ()
+    expense_categories: tuple[str, ...] = DEFAULT_EXPENSE_CATEGORIES
 
     def is_allowed(self, user_id: str | None) -> bool:
         """An empty allowlist means "anyone who can reach the webhook"."""
@@ -132,6 +144,19 @@ def _slots(
     return tuple(parsed)
 
 
+def _categories(raw) -> tuple[str, ...]:
+    """An explicit empty list disables the category question."""
+    if raw is None:
+        return DEFAULT_EXPENSE_CATEGORIES
+    if isinstance(raw, str) or not isinstance(raw, list | tuple):
+        # A bare string would be iterated character by character.
+        raise ConfigError(
+            "line_bot.expense_categories must be a list of names, e.g. "
+            "[food, transport]"
+        )
+    return tuple(str(category) for category in raw)
+
+
 def load_config(
     path: Path | None = None, env: dict[str, str] | None = None
 ) -> Config:
@@ -177,6 +202,7 @@ def load_config(
         photo_slots=_slots(
             bot_data.get("photo_slots"), DEFAULT_PHOTO_SLOTS, "photo_slots"
         ),
+        expense_categories=_categories(bot_data.get("expense_categories")),
     )
 
     return Config(

@@ -58,6 +58,12 @@ line_bot:
       question: "Part of one of today's events? (name it, or '-')"
     - key: notes
       question: "Anything about it worth remembering?"
+  # Categories offered when recording an expense — via "spent 120 lunch"
+  # or by answering "slip" to a photo (Thai banking apps save transfer
+  # slips to the gallery, so the photo sweep finds the day's payments).
+  # Reply with a number or a name; [] turns the category question off.
+  expense_categories:
+    [food, transport, groceries, household, health, fun, bills, other]
 
 # Photos.
 photos:

@@ -82,6 +82,9 @@ message is never read as an answer to yesterday's question.
 | `today` | reads back today's RAW zone |
 | `photos` | finds today's photos, records them, then asks about each (below) |
 | `next` | skips to the next photo in the queue |
+| `slip` (to a photo question) | records that photo as an expense: amount → category → what for |
+| `spent <amount> <what>` | records an expense without a photo (`จ่าย` works too) |
+| `expenses` | today's spending, totalled by category |
 | `whoami` | your LINE user id, for `allowed_user_ids` |
 | `help` | the command list |
 
@@ -152,6 +155,78 @@ list what it found.
 
 Note that mid-queue a bare word is an answer, so use `/photos` or
 `/today` if you want the command while questions are open.
+
+## Recording expenses
+
+Thai banking apps save a slip to the gallery for every transfer and
+PromptPay payment — which means the photo sweep already finds the day's
+payments. When the queue reaches a slip, answer **`slip`** instead of
+the first question and the bot switches to expense questions for that
+photo:
+
+```
+bot ← Screenshot_KBank_1240.jpg (12:40) [2 left]
+      Where was this taken?
+you → slip
+bot ← Recording it as an expense.
+      How much was it? (just the number, e.g. 120 or 1,250.50)
+you → 350
+bot ← Category? Reply a number or a name:
+      1 food  2 transport  3 groceries  4 household  5 health  6 fun  7 bills  8 other
+you → 3
+bot ← What was it for?
+you → weekly market run
+```
+
+The answers land on the slip's own RAW entry, next to the file link —
+one entry ties together the image, the amount and the category:
+
+```markdown
+- **12:40** `photo` Screenshot_KBank_1240.jpg ^raw-photo-9c2f11ab0d44
+    - file:: /home/user/phone-sync/Screenshot_KBank_1240.jpg
+    - taken:: 2026-08-05 12:40
+    - source:: scan
+    - amount:: 350
+    - category:: groceries
+    - what:: weekly market run
+```
+
+Cash and anything without a slip goes in directly with **`spent`** (or
+Thai **`จ่าย`**):
+
+```
+you → spent 120 lunch at the market
+bot ← Category? Reply a number or a name: …
+you → 1
+bot ← Saved to 2026-08-05.md → RAW
+```
+
+The amount is picked out of the message ("120", "1,250.50", "฿120",
+"120 baht" all work), so usually only the category question remains;
+`spent` alone asks for amount, category and description in turn.
+
+**`expenses`** reads the day back by category:
+
+```
+2026-08-05 — 3 expense(s), total 850
+bills: 380 (1)
+groceries: 350 (1)
+food: 120 (1)
+
+• 07:20 — 120 food — lunch at the market
+• 12:40 — 350 groceries — weekly market run
+…
+```
+
+(Categories are listed biggest first; the detail lines follow the
+order they sit in the note.)
+
+The categories are `line_bot.expense_categories` in config — edit the
+list to match how you actually budget; a reply that matches nothing is
+kept verbatim as a free-form category, and `[]` turns the category
+question off. Amounts are stored as plain `amount::` fields, so the
+nightly ingest (Phase 3) can roll them into weekly or monthly ledgers
+per category without re-parsing anything.
 
 ### Getting the camera roll within reach
 
