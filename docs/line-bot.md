@@ -162,21 +162,33 @@ Google's Photos Library API is not a way around this either: since 2025
 it only returns media the calling app itself created, and anything else
 requires the user to pick photos by hand in the Picker.
 
-So the camera roll has to come to a directory the server can see, and
-then `photos.source_dirs` does the rest:
+The same goes for assistant apps on the machine (Claude's Cowork desktop
+app and the like): they run on the desktop, not the phone, so they can
+only see a folder the phone has already synced — which is exactly what
+`photos.source_dirs` reads. The camera roll has to come to a directory
+the server can see, and then the sweep does the rest.
 
-- **A sync client** — Syncthing, Nextcloud, or the desktop client for
-  iCloud or Google Photos, pointed at a folder on the machine running
-  the app. Set and forget, and the sweep sees each day's photos with
-  their EXIF intact.
-- **An iOS Shortcuts automation** — "at 21:00, take today's photos and
-  send them to <the bot>". Photos sent this way arrive over LINE and are
-  filed in the vault directly.
-- **By hand** — send the ones that matter in the chat as the day goes.
+**On Android, Syncthing is the clean path** — camera roll to server
+folder, automatically, EXIF intact, no cloud in between:
 
-The first is the one worth setting up: it needs no daily action, and the
-questions above are what turn a folder of files into something the wiki
-can use.
+1. Install [Syncthing-Fork](https://github.com/Catfriend1/syncthing-android)
+   on the phone (the actively maintained Android build) and Syncthing on
+   the machine running satemshi.
+2. On the phone, share the `DCIM/Camera` folder; on the server, accept
+   it into e.g. `~/phone-sync/camera`, and mark the server side
+   "Receive Only" so nothing can touch the photos on the phone.
+3. Point the config at it:
+
+   ```yaml
+   photos:
+     source_dirs: ["~/phone-sync/camera"]
+   ```
+
+From then on, sending `photos` to the bot any evening lists what you
+shot today and starts the questions. Alternatives: Nextcloud auto-upload
+works the same way; on iOS, a Shortcuts automation can send the day's
+photos to the bot over LINE instead; and hand-sending the ones that
+matter in the chat always works.
 
 ## Setting it up
 

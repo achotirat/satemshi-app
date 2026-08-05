@@ -44,12 +44,20 @@ line_bot:
       question: "Anything else worth remembering?"
   # Asked once per photo after a "photos" sweep, for the pictures that
   # have no answers on them yet. The answers are added to the photo's
-  # existing RAW entry. Set to [] to have the sweep only list photos.
+  # existing RAW entry as key:: value fields the nightly ingest can read.
+  # Fewer questions = less friction per photo — trim this list rather
+  # than skipping every photo. Set to [] to have the sweep only list.
   photo_slots:
     - key: where
       question: "Where was this taken?"
     - key: what
-      question: "What is it — and who's in it?"
+      question: "What is it?"
+    - key: who
+      question: "Who's in it / who was around? (comma-separated)"
+    - key: event
+      question: "Part of one of today's events? (name it, or '-')"
+    - key: notes
+      question: "Anything about it worth remembering?"
 
 # Photos.
 photos:
