@@ -18,12 +18,21 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
 
 @dataclass
 class Session:
+    """An in-progress capture.
+
+    ``kind`` is ``"event"`` for the slot-filling capture flow, or
+    ``"photo"`` when the bot is working through ``queue`` — the photos a
+    sweep found — asking about each one in turn.
+    """
+
     user_id: str
     entry_id: str
     title: str
     slot_index: int = 0
     answers: dict[str, str] = field(default_factory=dict)
     updated_at: float = 0.0
+    kind: str = "event"
+    queue: list[dict[str, str]] = field(default_factory=list)
 
 
 class SessionStore:

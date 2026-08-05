@@ -80,7 +80,8 @@ message is never read as an answer to yesterday's question.
 | a location | recorded — or used as the answer to "where" mid-capture |
 | `note <text>` | captures verbatim, no questions asked |
 | `today` | reads back today's RAW zone |
-| `photos` | finds today's photos and records them (below) |
+| `photos` | finds today's photos, records them, then asks about each (below) |
+| `next` | skips to the next photo in the queue |
 | `whoami` | your LINE user id, for `allowed_user_ids` |
 | `help` | the command list |
 
@@ -89,7 +90,7 @@ command — "today" is a perfectly good answer to "when did it happen?".
 Prefix a command with `/` (`/today`, `/photos`) to run it mid-capture.
 `done` and `cancel` always act as commands.
 
-## Finding today's photos
+## Finding today's photos — and asking about them
 
 `photos` sweeps two places and records anything not already in RAW:
 
@@ -103,6 +104,79 @@ file's modification time otherwise — so a screenshot or a PNG still lands
 on the right day. EXIF is parsed directly from the JPEG, so the capture
 path needs no imaging library. The sweep is idempotent: run it at noon
 and again at midnight and the second run only records what is new.
+
+A photo file only tells you *when* — never *where* it was or *what* it
+was. So once the sweep has recorded them, the bot walks through the
+photos that have no answers yet and asks the `photo_slots` questions
+about each one:
+
+```
+you → photos
+bot ← 3 photo(s) for 2026-08-04, 3 newly recorded in RAW:
+      • 07:12 — IMG_2201.jpg (scan)
+      • 12:40 — IMG_2202.jpg (scan)
+      • 18:03 — IMG_2203.jpg (scan)
+
+      3 still unanswered — let's go through them.
+      ("-" skips a question, "next" skips the photo, "done" stops)
+
+      IMG_2201.jpg (07:12) [3 left]
+      Where was this taken?
+you → Ao Nang beach
+bot ← What is it — and who's in it?
+you → sunrise, walking with Nok
+bot ← Saved.
+
+      IMG_2202.jpg (12:40) [2 left]
+      Where was this taken?
+```
+
+Answers are added to the photo's **existing** RAW entry rather than
+written as a new one, so a photo stays one entry that grows:
+
+```markdown
+- **07:12** `photo` IMG_2201.jpg ^raw-photo-41c590b92305
+    - file:: /home/user/phone-sync/IMG_2201.jpg
+    - taken:: 2026-08-04 07:12
+    - source:: scan
+    - where:: Ao Nang beach          ← added when you answered
+    - what:: sunrise, walking with Nok
+```
+
+Answers are written as each photo finishes, so stopping halfway keeps
+what you already said. `done` stops the queue; running `photos` again
+picks up only the ones still unanswered. Dropping a LINE location pin
+answers the question on the table — handy for "where was this taken?".
+Set `photo_slots: []` to turn the questions off and have the sweep only
+list what it found.
+
+Note that mid-queue a bare word is an answer, so use `/photos` or
+`/today` if you want the command while questions are open.
+
+### Getting the camera roll within reach
+
+The bot cannot read your phone's Photos app. A LINE bot only ever sees
+what is sent to it in the chat — the Messaging API has no access to the
+device, and iOS and Android do not hand the camera roll to a server.
+Google's Photos Library API is not a way around this either: since 2025
+it only returns media the calling app itself created, and anything else
+requires the user to pick photos by hand in the Picker.
+
+So the camera roll has to come to a directory the server can see, and
+then `photos.source_dirs` does the rest:
+
+- **A sync client** — Syncthing, Nextcloud, or the desktop client for
+  iCloud or Google Photos, pointed at a folder on the machine running
+  the app. Set and forget, and the sweep sees each day's photos with
+  their EXIF intact.
+- **An iOS Shortcuts automation** — "at 21:00, take today's photos and
+  send them to <the bot>". Photos sent this way arrive over LINE and are
+  filed in the vault directly.
+- **By hand** — send the ones that matter in the chat as the day goes.
+
+The first is the one worth setting up: it needs no daily action, and the
+questions above are what turn a folder of files into something the wiki
+can use.
 
 ## Setting it up
 

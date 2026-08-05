@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from ..config import Config
@@ -33,6 +33,7 @@ from .sessions import Session, SessionStore
 logger = logging.getLogger(__name__)
 
 SKIP_TOKENS = {"-", "skip", "ข้าม"}
+NEXT_TOKENS = {"next", "ถัดไป"}
 
 HELP_TEXT = (
     "Send me anything about today and it lands in your vault's RAW zone.\n\n"
@@ -41,8 +42,9 @@ HELP_TEXT = (
     "• a location — recorded, or used as the answer to “where”\n\n"
     "Commands:\n"
     "• today — read back today's RAW zone\n"
-    "• photos — find today's photos and record them\n"
+    "• photos — find today's photos, then ask about each one\n"
     "• note <text> — capture verbatim, no questions\n"
+    "• next — skip to the next photo\n"
     "• done — finish the current capture now\n"
     "• cancel — throw the current capture away\n"
     "• whoami — show my LINE user id\n"
@@ -136,7 +138,7 @@ class CaptureBot:
                 await self._reply(event, self._today_summary())
                 return
             if command == "photos":
-                await self._reply(event, self._sweep_photos())
+                await self._reply(event, self._sweep_photos(user_id))
                 return
             if command == "cancel":
                 if user_id:
@@ -156,12 +158,17 @@ class CaptureBot:
                     await self._reply(
                         event, "Nothing in progress. Send some text to start."
                     )
+                elif session.kind == "photo":
+                    await self._finish_photo_queue(event, session)
                 else:
                     await self._finalise(event, session)
                 return
 
         if session is not None:
-            await self._answer_slot(event, session, body)
+            if session.kind == "photo":
+                await self._answer_photo_slot(event, session, body)
+            else:
+                await self._answer_slot(event, session, body)
             return
 
         await self._start_capture(
@@ -261,6 +268,8 @@ class CaptureBot:
 
         fields = {"file": f"![[{photo.display}]]", "taken": f"{when:%Y-%m-%d %H:%M}"}
         session = self.sessions.get(user_id) if user_id else None
+        if session is not None and session.kind != "event":
+            session = None  # mid photo-queue: this is a new capture, not an answer
         if session is not None:
             fields["event"] = session.title
         await self._write_and_confirm(
@@ -283,6 +292,12 @@ class CaptureBot:
         place = (message.get("title") or message.get("address") or "location").strip()
         session = self.sessions.get(user_id) if user_id else None
         slots = self.config.line_bot.event_slots
+
+        if session is not None and session.kind == "photo":
+            # A location dropped while going through photos answers the
+            # question on the table — usually "where was this taken?".
+            await self._answer_photo_slot(event, session, place)
+            return
 
         if session is not None and session.slot_index < len(slots):
             # A location sent mid-capture is the answer to "where".
@@ -322,7 +337,7 @@ class CaptureBot:
         count = sum(1 for line in zone.splitlines() if line.startswith("- "))
         return f"{today.isoformat()} — {count} capture(s):\n\n{zone}"
 
-    def _sweep_photos(self) -> str:
+    def _sweep_photos(self, user_id: str | None) -> str:
         today = self._now().date()
         found = self.photos.find_for_day(today)
         if not found:
@@ -332,8 +347,14 @@ class CaptureBot:
                 "location(s). Send one here and I'll file it."
             )
 
+        # A photo sent to the bot is already in RAW under its own anchor,
+        # and the sweep sees the same file again in the attachments
+        # directory — so match on the link, not just the anchor.
+        zone = self.vault.read_raw_zone(today)
         added = 0
         for photo in found:
+            if _photo_link(photo) in zone:
+                continue
             if self.vault.append(_photo_entry(photo), day=today):
                 added += 1
 
@@ -341,9 +362,110 @@ class CaptureBot:
             f"• {photo.taken_at:%H:%M} — {photo.display} ({photo.source})"
             for photo in found
         )
-        return (
+        header = (
             f"{len(found)} photo(s) for {today.isoformat()}, "
             f"{added} newly recorded in RAW:\n\n{listing}"
+        )
+        return header + self._start_photo_questions(user_id, today)
+
+    # -- asking about the photos ---------------------------------------
+
+    def _start_photo_questions(self, user_id: str | None, day: date) -> str:
+        """Queue up the photos that have no answers on them yet."""
+        slots = self.config.line_bot.photo_slots
+        if user_id is None or not slots:
+            return ""
+
+        keys = {slot.key for slot in slots}
+        queue = [
+            {
+                "anchor": entry.anchor,
+                "name": entry.title,
+                "at": entry.time,
+                "day": day.isoformat(),
+            }
+            for entry in self.vault.entries(day)
+            if entry.kind == "photo" and not keys & set(entry.fields)
+        ]
+        if not queue:
+            return "\n\nAll of them already have answers on them."
+
+        session = Session(
+            user_id=user_id,
+            entry_id=f"photos-{day.isoformat()}",
+            title="photos",
+            kind="photo",
+            queue=queue,
+        )
+        self.sessions.save(session)
+        return (
+            f"\n\n{len(queue)} still unanswered — let's go through them.\n"
+            f"(“-” skips a question, “next” skips the photo, “done” stops)\n\n"
+            f"{self._photo_prompt(session)}"
+        )
+
+    def _photo_prompt(self, session: Session) -> str:
+        photo = session.queue[0]
+        slot = self.config.line_bot.photo_slots[session.slot_index]
+        remaining = f" [{len(session.queue)} left]" if len(session.queue) > 1 else ""
+        return f"{photo['name']} ({photo['at']}){remaining}\n{slot.question}"
+
+    async def _answer_photo_slot(
+        self, event: dict, session: Session, answer: str
+    ) -> None:
+        slots = self.config.line_bot.photo_slots
+        cleaned = answer.strip()
+
+        if cleaned.lower() in NEXT_TOKENS:
+            await self._advance_photo(event, session, skipped=True)
+            return
+        if cleaned.lower() not in SKIP_TOKENS:
+            session.answers[slots[session.slot_index].key] = cleaned
+        session.slot_index += 1
+
+        if session.slot_index >= len(slots):
+            await self._advance_photo(event, session)
+            return
+
+        self.sessions.save(session)
+        await self._reply(event, slots[session.slot_index].question)
+
+    async def _advance_photo(
+        self, event: dict, session: Session, skipped: bool = False
+    ) -> None:
+        """Write the answers onto the current photo, then move to the next."""
+        written = self._store_photo_answers(session)
+        session.queue.pop(0)
+        session.slot_index = 0
+        session.answers = {}
+
+        if not session.queue:
+            self.sessions.clear(session.user_id)
+            await self._reply(event, _photo_queue_done(written, skipped))
+            return
+
+        self.sessions.save(session)
+        prefix = "Skipped." if skipped else "Saved."
+        await self._reply(event, f"{prefix}\n\n{self._photo_prompt(session)}")
+
+    async def _finish_photo_queue(self, event: dict, session: Session) -> None:
+        self._store_photo_answers(session)
+        remaining = len(session.queue) - 1
+        self.sessions.clear(session.user_id)
+        await self._reply(
+            event,
+            f"Stopped. {remaining} photo(s) left unanswered — "
+            "run “photos” again to pick up where we left off.",
+        )
+
+    def _store_photo_answers(self, session: Session) -> bool:
+        if not session.answers or not session.queue:
+            return False
+        photo = session.queue[0]
+        return self.vault.add_fields(
+            date.fromisoformat(photo["day"]),
+            photo["anchor"],
+            self._with_source(dict(session.answers), session.user_id),
         )
 
     # -- plumbing ------------------------------------------------------
@@ -393,9 +515,24 @@ class CaptureBot:
             logger.exception("Could not reply to LINE event")
 
 
+def _photo_link(photo: Photo) -> str:
+    """An Obsidian embed for a photo in the vault, a path for one outside."""
+    return f"![[{photo.vault_relative}]]" if photo.vault_relative else str(photo.path)
+
+
+def _photo_queue_done(written: bool, skipped: bool) -> str:
+    if skipped:
+        return "Skipped. That was the last one — all photos handled."
+    return (
+        "Saved. That was the last one — all photos handled."
+        if written
+        else "That was the last one — all photos handled."
+    )
+
+
 def _photo_entry(photo: Photo) -> RawEntry:
     digest = hashlib.sha1(str(photo.path.resolve()).encode("utf-8")).hexdigest()[:12]
-    link = f"![[{photo.vault_relative}]]" if photo.vault_relative else str(photo.path)
+    link = _photo_link(photo)
     return RawEntry(
         at=photo.taken_at,
         kind="photo",

@@ -71,6 +71,10 @@ def make_config(vault: Path, session_dir: str):
                     EventSlot("when", "When did it happen?"),
                     EventSlot("who", "Who was there?"),
                 ),
+                photo_slots=(
+                    EventSlot("where", "Where was this taken?"),
+                    EventSlot("what", "What is it?"),
+                ),
             ),
             line_channel_secret="s3cret",
             line_channel_access_token="token",

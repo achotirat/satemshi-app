@@ -42,6 +42,14 @@ line_bot:
       question: "Who was there? (comma-separated)"
     - key: notes
       question: "Anything else worth remembering?"
+  # Asked once per photo after a "photos" sweep, for the pictures that
+  # have no answers on them yet. The answers are added to the photo's
+  # existing RAW entry. Set to [] to have the sweep only list photos.
+  photo_slots:
+    - key: where
+      question: "Where was this taken?"
+    - key: what
+      question: "What is it — and who's in it?"
 
 # Photos.
 photos:

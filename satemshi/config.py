@@ -26,6 +26,11 @@ DEFAULT_EVENT_SLOTS: list[dict[str, str]] = [
     {"key": "notes", "question": "Anything else worth remembering?"},
 ]
 
+DEFAULT_PHOTO_SLOTS: list[dict[str, str]] = [
+    {"key": "where", "question": "Where was this taken?"},
+    {"key": "what", "question": "What is it — and who's in it?"},
+]
+
 
 class ConfigError(RuntimeError):
     """Raised when configuration is missing or unusable."""
@@ -67,6 +72,7 @@ class LineBotConfig:
     session_dir: str = "sessions"
     session_ttl_seconds: int = 1800
     event_slots: tuple[EventSlot, ...] = ()
+    photo_slots: tuple[EventSlot, ...] = ()
 
     def is_allowed(self, user_id: str | None) -> bool:
         """An empty allowlist means "anyone who can reach the webhook"."""
@@ -112,13 +118,15 @@ def _config_path(explicit: Path | None) -> Path | None:
     return default if default.is_file() else None
 
 
-def _slots(raw_slots) -> tuple[EventSlot, ...]:
-    slots = raw_slots if raw_slots is not None else DEFAULT_EVENT_SLOTS
+def _slots(
+    raw_slots, defaults: list[dict[str, str]], name: str
+) -> tuple[EventSlot, ...]:
+    slots = raw_slots if raw_slots is not None else defaults
     parsed: list[EventSlot] = []
     for entry in slots:
         if not isinstance(entry, dict) or "key" not in entry or "question" not in entry:
             raise ConfigError(
-                "line_bot.event_slots entries need both a 'key' and a 'question'"
+                f"line_bot.{name} entries need both a 'key' and a 'question'"
             )
         parsed.append(EventSlot(key=str(entry["key"]), question=str(entry["question"])))
     return tuple(parsed)
@@ -163,7 +171,12 @@ def load_config(
         session_ttl_seconds=int(
             bot_data.get("session_ttl_seconds", LineBotConfig.session_ttl_seconds)
         ),
-        event_slots=_slots(bot_data.get("event_slots")),
+        event_slots=_slots(
+            bot_data.get("event_slots"), DEFAULT_EVENT_SLOTS, "event_slots"
+        ),
+        photo_slots=_slots(
+            bot_data.get("photo_slots"), DEFAULT_PHOTO_SLOTS, "photo_slots"
+        ),
     )
 
     return Config(

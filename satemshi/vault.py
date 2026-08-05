@@ -10,7 +10,9 @@ rewrite anything else in the file.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -20,6 +22,46 @@ from .models import RawEntry
 
 class VaultError(RuntimeError):
     """Raised when the vault or a daily note is not in a usable state."""
+
+
+_ENTRY_RE = re.compile(
+    r"^- \*\*(?P<time>\d{2}:\d{2})\*\* `(?P<kind>[a-z]+)` "
+    r"(?P<title>.*) \^(?P<anchor>[A-Za-z0-9-]+)$"
+)
+
+
+@dataclass(frozen=True)
+class ZoneEntry:
+    """One capture, as read back out of a note's RAW zone."""
+
+    anchor: str
+    kind: str
+    title: str
+    time: str
+    fields: dict[str, str]
+
+
+def _find_anchor(lines: list[str], anchor: str) -> int | None:
+    marker = f"^{anchor}"
+    return next((i for i, line in enumerate(lines) if line.endswith(marker)), None)
+
+
+def _end_of_block(lines: list[str], index: int) -> int:
+    """Index just past the field lines belonging to the entry at ``index``."""
+    tail = index + 1
+    while tail < len(lines) and lines[tail].startswith("    - "):
+        tail += 1
+    return tail
+
+
+def _fields_of(lines: list[str], index: int) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in lines[index + 1 : _end_of_block(lines, index)]:
+        if "::" not in line:
+            continue
+        key, _, value = line.partition("::")
+        fields[key.strip("- ").strip()] = value.strip()
+    return fields
 
 
 class VaultWriter:
@@ -53,6 +95,30 @@ class VaultWriter:
     def has_entry(self, day: date, anchor: str) -> bool:
         return f"^{anchor}" in self.read_raw_zone(day)
 
+    def entries(self, day: date) -> list[ZoneEntry]:
+        """Read the RAW zone back as structured entries.
+
+        The zone is the source of truth for what has already been
+        captured, so callers can ask "which photos still have no
+        caption?" without keeping a second index anywhere.
+        """
+        lines = self.read_raw_zone(day).split("\n")
+        found: list[ZoneEntry] = []
+        for index, line in enumerate(lines):
+            match = _ENTRY_RE.match(line)
+            if match is None:
+                continue
+            found.append(
+                ZoneEntry(
+                    anchor=match["anchor"],
+                    kind=match["kind"],
+                    title=match["title"],
+                    time=match["time"],
+                    fields=_fields_of(lines, index),
+                )
+            )
+        return found
+
     # -- writing -------------------------------------------------------
 
     def append(self, entry: RawEntry, day: date | None = None) -> bool:
@@ -81,6 +147,45 @@ class VaultWriter:
         block = entry.to_markdown()
         new_zone = f"\n{body}\n{block}\n" if body else f"\n{block}\n"
         self._write_atomic(path, text[:start] + new_zone + text[end:])
+        return True
+
+    def add_fields(self, day: date, anchor: str, fields: dict[str, str]) -> bool:
+        """Add fields to an entry that is already in the RAW zone.
+
+        Used when an answer arrives after the capture was written — the
+        photo sweep records what it finds immediately, and captions come
+        later. Existing fields are never overwritten.
+        """
+        path = self.daily_note_path(day)
+        if not path.is_file():
+            return False
+        text = path.read_text(encoding="utf-8")
+        try:
+            start, end = self._zone_bounds(text)
+        except LookupError:
+            return False
+
+        lines = text[start:end].split("\n")
+        index = _find_anchor(lines, anchor)
+        if index is None:
+            return False
+
+        tail = _end_of_block(lines, index)
+        existing = {
+            line.split("::", 1)[0].strip("- ").strip()
+            for line in lines[index + 1 : tail]
+            if "::" in line
+        }
+        additions = [
+            f"    - {key}:: {str(value).strip()}"
+            for key, value in fields.items()
+            if str(value).strip() and key not in existing
+        ]
+        if not additions:
+            return False
+
+        lines[tail:tail] = additions
+        self._write_atomic(path, text[:start] + "\n".join(lines) + text[end:])
         return True
 
     # -- internals -----------------------------------------------------

@@ -199,8 +199,10 @@ def test_photos_command_sweeps_source_dirs_into_raw(make_config, now, tmp_path):
     assert "IMG_9.jpg" in zone
     assert "IMG_8.jpg" not in zone
 
-    # Sweeping again finds the same photo but records nothing new.
-    send(bot, text_event("photos", "e2"))
+    # Sweeping again finds the same photo but records nothing new. The
+    # slash form is needed because the first sweep left questions open,
+    # and a bare word there is an answer.
+    send(bot, text_event("/photos", "e2"))
     assert "0 newly recorded" in client.last_reply
     assert bot.vault.read_raw_zone(DAY).count("^raw-photo-") == 1
 
@@ -312,3 +314,155 @@ def test_unsupported_message_type_is_declined(make_config, now):
 
     assert "can't capture a sticker" in client.last_reply
     assert bot.vault.read_raw_zone(DAY) == ""
+
+
+# -- asking about the photos -------------------------------------------
+
+
+def photo_bot(make_config, now, tmp_path, count=2):
+    phone = tmp_path / "phone"
+    phone.mkdir()
+    for index in range(count):
+        (phone / f"IMG_{index}.jpg").write_bytes(
+            jpeg_with_exif(f"2026:08:04 0{index + 7}:00:00")
+        )
+    return make_bot(make_config, now, photos=PhotosConfig(source_dirs=(str(phone),)))
+
+
+def test_sweep_asks_about_each_photo_in_turn(make_config, now, tmp_path):
+    bot, client = photo_bot(make_config, now, tmp_path)
+
+    send(bot, text_event("photos", "e1"))
+    assert "2 still unanswered" in client.last_reply
+    assert "IMG_0.jpg (07:00) [2 left]" in client.last_reply
+    assert "Where was this taken?" in client.last_reply
+
+    send(bot, text_event("Ao Nang beach", "e2"))
+    assert "What is it?" in client.last_reply
+
+    send(bot, text_event("sunrise over the karsts", "e3"))
+    assert "IMG_1.jpg (08:00)" in client.last_reply  # moved to the next photo
+
+    zone = bot.vault.read_raw_zone(DAY)
+    assert "- where:: Ao Nang beach" in zone
+    assert "- what:: sunrise over the karsts" in zone
+
+    send(bot, text_event("Krabi town", "e4"))
+    send(bot, text_event("lunch", "e5"))
+    assert "all photos handled" in client.last_reply
+    assert bot.vault.read_raw_zone(DAY).count("- where::") == 2
+
+
+def test_answers_attach_to_the_right_photo(make_config, now, tmp_path):
+    bot, _ = photo_bot(make_config, now, tmp_path)
+
+    send(bot, text_event("photos", "e1"))
+    send(bot, text_event("first place", "e2"))
+    send(bot, text_event("first thing", "e3"))
+    send(bot, text_event("second place", "e4"))
+    send(bot, text_event("second thing", "e5"))
+
+    entries = {e.title: e.fields for e in bot.vault.entries(DAY)}
+    assert entries["IMG_0.jpg"]["where"] == "first place"
+    assert entries["IMG_1.jpg"]["where"] == "second place"
+
+
+def test_next_skips_a_photo_without_writing(make_config, now, tmp_path):
+    bot, client = photo_bot(make_config, now, tmp_path)
+
+    send(bot, text_event("photos", "e1"))
+    send(bot, text_event("next", "e2"))
+
+    assert "Skipped." in client.last_reply
+    assert "IMG_1.jpg" in client.last_reply
+    entries = {e.title: e.fields for e in bot.vault.entries(DAY)}
+    assert "where" not in entries["IMG_0.jpg"]
+
+
+def test_dash_skips_only_the_question(make_config, now, tmp_path):
+    bot, _ = photo_bot(make_config, now, tmp_path, count=1)
+
+    send(bot, text_event("photos", "e1"))
+    send(bot, text_event("-", "e2"))
+    send(bot, text_event("a gecko on the wall", "e3"))
+
+    fields = bot.vault.entries(DAY)[0].fields
+    assert "where" not in fields
+    assert fields["what"] == "a gecko on the wall"
+
+
+def test_done_stops_the_queue_and_keeps_the_rest(make_config, now, tmp_path):
+    bot, client = photo_bot(make_config, now, tmp_path)
+
+    send(bot, text_event("photos", "e1"))
+    send(bot, text_event("Ao Nang", "e2"))
+    send(bot, text_event("done", "e3"))
+
+    assert "1 photo(s) left unanswered" in client.last_reply
+    entries = {e.title: e.fields for e in bot.vault.entries(DAY)}
+    assert entries["IMG_0.jpg"]["where"] == "Ao Nang"
+    assert "where" not in entries["IMG_1.jpg"]
+
+    # Sweeping again picks up only the one that is still unanswered.
+    send(bot, text_event("photos", "e4"))
+    assert "1 still unanswered" in client.last_reply
+    assert "IMG_1.jpg" in client.last_reply
+
+
+def test_a_second_sweep_says_nothing_is_left_to_answer(make_config, now, tmp_path):
+    bot, client = photo_bot(make_config, now, tmp_path, count=1)
+
+    send(bot, text_event("photos", "e1"))
+    send(bot, text_event("Ao Nang", "e2"))
+    send(bot, text_event("a boat", "e3"))
+    send(bot, text_event("photos", "e4"))
+
+    assert "already have answers" in client.last_reply
+
+
+def test_a_location_answers_the_photo_question(make_config, now, tmp_path):
+    bot, client = photo_bot(make_config, now, tmp_path, count=1)
+
+    send(bot, text_event("photos", "e1"))
+    send(
+        bot,
+        {
+            "type": "message",
+            "webhookEventId": "e2",
+            "replyToken": "r2",
+            "source": {"userId": USER},
+            "message": {"type": "location", "id": "loc", "title": "Railay Beach"},
+        },
+    )
+
+    assert "What is it?" in client.last_reply
+    assert "- where:: Railay Beach" not in bot.vault.read_raw_zone(DAY)  # not yet
+    send(bot, text_event("longtail boats", "e3"))
+    assert "- where:: Railay Beach" in bot.vault.read_raw_zone(DAY)
+
+
+def test_a_sent_photo_is_not_recorded_twice_by_the_sweep(make_config, now, tmp_path):
+    client = FakeClient(content=jpeg_with_exif("2026:08:04 09:15:00"))
+    bot, _ = make_bot(make_config, now, client=client)
+
+    send(bot, image_event("img1"))
+    send(bot, text_event("photos", "e1"))
+
+    photos = [e for e in bot.vault.entries(DAY) if e.kind == "photo"]
+    assert len(photos) == 1
+
+
+def test_a_sent_photo_gets_asked_about_too(make_config, now):
+    client = FakeClient(content=jpeg_with_exif("2026:08:04 09:15:00"))
+    bot, _ = make_bot(make_config, now, client=client)
+
+    send(bot, image_event("img1"))
+    send(bot, text_event("photos", "e1"))
+    assert "Where was this taken?" in client.last_reply
+
+    send(bot, text_event("the villa", "e2"))
+    send(bot, text_event("the new pool tiles", "e3"))
+
+    fields = next(e for e in bot.vault.entries(DAY) if e.kind == "photo").fields
+    assert fields["where"] == "the villa"
+    assert fields["what"] == "the new pool tiles"
