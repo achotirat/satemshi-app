@@ -13,18 +13,24 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Keep this in step with the gitleaks rev in .pre-commit-config.yaml,
+  # so a commit that passes locally passes here for the same reasons.
+  GITLEAKS_VERSION: 8.21.2
+
 jobs:
   test:
     name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -38,10 +44,11 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -50,21 +57,29 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
 
+      # The whole tree, not a hardcoded list: a new top-level package
+      # should be linted the day it appears, not the day someone
+      # remembers to add it here.
       - name: Ruff
-        run: ruff check satemshi tests
+        run: ruff check .
 
   guard:
     name: secret + personal-data scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          # Full history: gitleaks scans commits, and a secret added in
+          # one commit and deleted in the next is still published.
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
       - name: Cache pre-commit environments
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
@@ -74,7 +89,21 @@ jobs:
 
       # This repo is public and the vault it writes to is not. The same
       # hooks that guard a local commit run here over every file, so a
-      # personal path or key cannot reach main through a PR that was
-      # authored without them installed.
+      # personal path cannot reach main through a PR that was authored
+      # without them installed.
       - name: Run hooks
         run: pre-commit run --all-files --show-diff-on-failure
+
+      # The gitleaks *hook* runs "gitleaks protect --staged", which is
+      # right for a commit and useless here: a CI checkout has nothing
+      # staged, so the hook above passes no matter what the code holds.
+      # Scan the history explicitly instead.
+      - name: Install gitleaks
+        run: |
+          curl -sSL --fail \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks version
+
+      - name: Secret scan
+        run: ./gitleaks detect --source . --redact --verbose
