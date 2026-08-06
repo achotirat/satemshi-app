@@ -75,15 +75,27 @@ running before you push:
 ```bash
 pytest                      # the suite
 ruff check satemshi tests   # lint
-pre-commit run --all-files  # secret + personal-data scan
+pre-commit run --all-files  # personal-data scan, hygiene
 ```
 
 Install the hooks once (`pip install pre-commit && pre-commit install`)
 and the third runs itself on every commit. It is the one that matters
 most here: this repo is public, the vault it writes to is not, and the
 hooks exist to keep a personal path or an API key from crossing that
-line. CI runs them again over every file, so a pull request authored
-without the hooks installed is still caught.
+line.
+
+One wrinkle worth knowing: the gitleaks hook runs `gitleaks protect
+--staged`, so it scans **what you are about to commit**. That is what
+you want from a commit hook, and it means `pre-commit run --all-files`
+does *not* secret-scan the repo — with nothing staged there is nothing
+for it to look at. To scan by hand:
+
+```bash
+gitleaks detect --source . --redact   # every commit in history
+```
+
+CI does exactly that, in addition to running the hooks over every file,
+so a pull request authored without the hooks installed is still caught.
 
 ## License
 
