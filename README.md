@@ -1,5 +1,7 @@
 # Satemshi App
 
+[![CI](https://github.com/achotirat/satemshi-app/actions/workflows/ci.yml/badge.svg)](https://github.com/achotirat/satemshi-app/actions/workflows/ci.yml)
+
 A personal assistant + second brain that **captures** moments during the day (links, mood, people met, priorities, to-buy list) and **ingests** them into an Obsidian vault as a structured wiki — using a swappable LLM backend (local Ollama, Claude API, or other providers) per task.
 
 > Status: **Phase 1 — first capture channel.** A LINE Bot captures today's events and photos into the vault's RAW zone. See [`docs/line-bot.md`](docs/line-bot.md).
@@ -64,6 +66,24 @@ python -m satemshi             # serves /line/webhook and /healthz
 Then point your LINE channel's webhook at `https://<your-host>/line/webhook`
 — see [`docs/line-bot.md`](docs/line-bot.md) for the full setup, the
 command list, and how photos are found.
+
+## Development
+
+Three checks run on every push and pull request, and all three are worth
+running before you push:
+
+```bash
+pytest                      # the suite
+ruff check satemshi tests   # lint
+pre-commit run --all-files  # secret + personal-data scan
+```
+
+Install the hooks once (`pip install pre-commit && pre-commit install`)
+and the third runs itself on every commit. It is the one that matters
+most here: this repo is public, the vault it writes to is not, and the
+hooks exist to keep a personal path or an API key from crossing that
+line. CI runs them again over every file, so a pull request authored
+without the hooks installed is still caught.
 
 ## License
 
