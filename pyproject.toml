@@ -17,7 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.5"]
+# Ruff is pinned to a minor series: a new one can add rules to the
+# selected sets, and CI going red on an unrelated PR because a linter
+# released that morning is not a useful signal.
+dev = ["pytest>=8.0", "ruff>=0.16,<0.17"]
 
 [project.scripts]
 satemshi = "satemshi.__main__:main"
