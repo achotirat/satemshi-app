@@ -93,13 +93,22 @@ tasks:
     provider: claude
     model: claude-sonnet-4-6
 
-# Vault git auto-commit settings (the webapp owns commits to the
-# vault repo so the working tree always stays clean).
+# Auto-commit of the vault after a capture, so the notes get history
+# and — with auto_push — a copy off this one disk. The vault must
+# already be a git repository; the app will not create one. Off by
+# default in code, so an absent block never starts committing someone's
+# vault; see docs/deploy.md.
 vault_git:
   enabled: true
-  # Coalesce captures into one commit if they happen within this window.
+  # The first change opens a window and every change inside it joins the
+  # same commit, so a capture and the four answers that follow it are
+  # one commit rather than five. Also a ceiling: nothing waits longer
+  # than this to be committed.
   coalesce_seconds: 300
-  # Auto-push to the vault's "origin" remote after each commit.
+  # Push to the vault's "origin" remote after each commit. Needs
+  # credentials that work with no terminal attached — a daemon cannot
+  # answer a password prompt, so one produces a logged failure and a
+  # commit that stays local.
   auto_push: true
 
 # Ingest pipeline schedule (handled by systemd timer in production;

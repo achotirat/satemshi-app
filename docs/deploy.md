@@ -67,64 +67,58 @@ message tells you which of the three failure modes you have.
 
 ## 2. Run it as a service
 
-launchd has no `EnvironmentFile`, so a wrapper sources `.env` rather
-than pasting secrets into a plist — plists in `/Library/LaunchDaemons`
-are world-readable; your `.env` is 600.
-
-`run.sh` in the repo root:
+Both pieces are in the repo — `run.sh` in the root, and the plist as
+`deploy/com.satemshi.capture.plist.template`. One command fills in the
+paths and starts it:
 
 ```bash
-#!/bin/bash
-cd "$(dirname "$0")"
-set -a; . ./.env; set +a
-exec .venv/bin/python -m satemshi
+sudo scripts/install-launchdaemon.sh
 ```
+
+That writes `/Library/LaunchDaemons/com.satemshi.capture.plist` with
+this checkout's path and your account name substituted in, then boots
+the job. Run it again after editing `run.sh` or the template — it boots
+the old job out first, so there is no separate reload procedure.
+`scripts/install-launchdaemon.sh --print` shows the plist it would
+install without touching anything.
 
 ```bash
-chmod +x run.sh
-```
-
-`/Library/LaunchDaemons/com.satemshi.capture.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>              <string>com.satemshi.capture</string>
-    <key>ProgramArguments</key>
-      <array><string>/Users/<you>/projects/satemshi-app/run.sh</string></array>
-    <key>WorkingDirectory</key>   <string>/Users/<you>/projects/satemshi-app</string>
-    <key>UserName</key>           <string><you></string>
-    <key>RunAtLoad</key>          <true/>
-    <key>KeepAlive</key>          <true/>
-    <key>StandardOutPath</key>
-      <string>/Users/<you>/projects/satemshi-app/logs/satemshi.log</string>
-    <key>StandardErrorPath</key>
-      <string>/Users/<you>/projects/satemshi-app/logs/satemshi.err</string>
-</dict>
-</plist>
-```
-
-```bash
-sudo chown root:wheel /Library/LaunchDaemons/com.satemshi.capture.plist
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.satemshi.capture.plist
 sudo launchctl print system/com.satemshi.capture    # state = running
 tail -f logs/satemshi.err                           # the app logs here
 ```
 
-Reload after editing either file:
-
-```bash
-sudo launchctl bootout system/com.satemshi.capture
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.satemshi.capture.plist
-```
+Two things the installer will not guess. It wants `sudo` **from your own
+account**, because the daemon has to run as the human who owns the vault
+— running as root would leave every captured file root-owned. And it
+checks `.venv`, `.env` and `run.sh` before writing anything, because
+`KeepAlive` turns any one of those being missing into a restart loop
+whose only evidence is a line in a log file nobody is tailing yet.
 
 A **LaunchDaemon**, not a LaunchAgent: an agent only runs while you are
 logged in, so a reboot would leave the bot down until someone sat at the
 machine. `UserName` keeps it running as you, so vault files get the
 right ownership.
+
+The plist sets `PATH`, because a daemon does not inherit your shell's
+and the vault auto-commit in step 7 needs to find `git`. What it does
+**not** hold is your credentials: files in `/Library/LaunchDaemons` are
+world-readable, so `run.sh` starts the app in the repo directory and the
+app reads its own `.env`, which is 600.
+
+`run.sh` gets that directory from its own location rather than from
+whoever invoked it, which is what keeps a clone sitting one level inside
+a directory of the same name honest — the copy of `run.sh` you install
+is the copy whose `.env` gets read.
+
+For the same reason `run.sh` does not source `.env` either. The app
+already reads it, and doing both makes every healthy start log
+
+    <path>/.env has no values filled in.
+    Ignored VAULT_PATH, LINE_CHANNEL_SECRET, … already set in the
+    environment.
+
+which are the two messages that are supposed to mean something is wrong
+(see [Troubleshooting](#troubleshooting)).
 
 ## 3. Expose the port
 
@@ -185,7 +179,58 @@ the file to exist under `Daily Notes/`. Silence means the event either
 never arrived or failed on arrival; `logs/satemshi.err` distinguishes
 the two.
 
-## 7. Photos
+## 7. Give the vault a history
+
+Captures now live on exactly one disk, with no way back from a bad edit.
+Auto-commit fixes both halves of that.
+
+The vault has to be a git repo first — the app will not create one:
+
+```bash
+cd /Users/<you>/vault
+git init
+git add -A && git commit -m "vault before satemshi"
+git remote add origin git@github.com:<you>/vault.git   # private repo!
+git push -u origin HEAD
+```
+
+Then in `config.yaml`:
+
+```yaml
+vault_git:
+  enabled: true
+  coalesce_seconds: 300
+  auto_push: true
+```
+
+Restart the service. Startup now says what it will do, so a
+misconfiguration surfaces at boot rather than five minutes into the
+first capture:
+
+    Vault auto-commit is on: committing and pushing /Users/<you>/vault every 300s.
+
+`coalesce_seconds` is a window, not a delay on everything. The first
+change opens it, every change landing inside joins the same commit, and
+the commit is made when it closes — so a capture and the four answers
+that follow it are one commit rather than five, and nothing waits longer
+than the window. Stopping the service closes an open window early and
+commits it, rather than losing it.
+
+`auto_push` needs credentials that work with nobody at the keyboard: an
+SSH key with no passphrase, or one already in the keychain. Git is run
+with prompting turned off, so a remote that wants a password is a logged
+failure and a commit that stays local — never a service hung forever on
+a prompt no one can see. Commits are unsigned for the same reason: a GPG
+pinentry has nobody to ask.
+
+None of this can lose a capture. The note is written and the reply sent
+before git is involved, and every failure leaves the change in the
+working tree for the next commit to sweep up. An unfinished merge or
+rebase in the vault pauses auto-commit until you finish it — captures
+keep arriving, they just wait rather than being committed on top of a
+conflict you were in the middle of resolving.
+
+## 8. Photos
 
 Point a sync client (Syncthing, or the desktop client for iCloud or
 Google Photos) at a folder on this machine, and list it in
@@ -229,6 +274,22 @@ by-hand runs ambiguous.
 inside a directory of the same name, it is easy to edit one `.env` and
 run the other. The startup line names the full path it read; trust that
 over which directory you think you are in.
+
+**Captures arrive but the vault is never committed.** Read the
+auto-commit line at startup first; it reports the state it found. Then,
+in order of how often it is the cause:
+
+| symptom in `logs/satemshi.err` | cause |
+| --- | --- |
+| `Vault auto-commit is off` | `vault_git.enabled` is not set in `config.yaml` |
+| `is not a git repository` | step 7's `git init` was never run |
+| `git is not on PATH` | the plist was hand-written without the `PATH` key |
+| `no 'origin' remote` | `auto_push` is on with nothing to push to |
+| `unfinished merge` / `rebase` | finish it in the vault; captures resume after |
+
+A push that fails on credentials logs the git error verbatim. Commits
+still happen — only the copy off the machine is missing, so it is worth
+fixing rather than ignoring.
 
 **`Operation not permitted` writing to the vault.** macOS TCC blocks
 background daemons from `~/Documents`, `~/Desktop`, `~/Downloads` and

@@ -94,12 +94,31 @@ class LineBotConfig:
 
 
 @dataclass(frozen=True)
+class VaultGitConfig:
+    """Auto-commit of the vault repo after a capture.
+
+    Off unless asked for: the vault is the user's own git repo, and
+    committing into it on their behalf is not something to start doing
+    because a config key was absent. ``config.example.yaml`` turns it on.
+    """
+
+    enabled: bool = False
+    # Wait this long after the first change before committing, so a
+    # capture and the answers that follow it land in one commit rather
+    # than five. Bounds the delay too — every change is committed within
+    # this window of arriving, however many more follow.
+    coalesce_seconds: int = 300
+    auto_push: bool = False
+
+
+@dataclass(frozen=True)
 class Config:
     vault_path: Path
     timezone: str = DEFAULT_TIMEZONE
     raw: RawConfig = field(default_factory=RawConfig)
     photos: PhotosConfig = field(default_factory=PhotosConfig)
     line_bot: LineBotConfig = field(default_factory=LineBotConfig)
+    vault_git: VaultGitConfig = field(default_factory=VaultGitConfig)
     line_channel_secret: str = ""
     line_channel_access_token: str = ""
 
@@ -259,6 +278,17 @@ def load_config(
         expense_categories=_categories(bot_data.get("expense_categories")),
     )
 
+    git_data = data.get("vault_git") or {}
+    vault_git = VaultGitConfig(
+        enabled=bool(git_data.get("enabled", VaultGitConfig.enabled)),
+        # A negative window would mean "commit before the write finishes".
+        coalesce_seconds=max(
+            0,
+            int(git_data.get("coalesce_seconds", VaultGitConfig.coalesce_seconds)),
+        ),
+        auto_push=bool(git_data.get("auto_push", VaultGitConfig.auto_push)),
+    )
+
     return Config(
         vault_path=Path(vault_raw).expanduser(),
         timezone=data.get("timezone", DEFAULT_TIMEZONE),
@@ -272,6 +302,7 @@ def load_config(
         ),
         photos=photos,
         line_bot=line_bot,
+        vault_git=vault_git,
         line_channel_secret=env.get("LINE_CHANNEL_SECRET", ""),
         line_channel_access_token=env.get("LINE_CHANNEL_ACCESS_TOKEN", ""),
     )

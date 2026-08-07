@@ -22,7 +22,7 @@ The framework is sharable. The data is yours.
 - **Two-zone Daily Notes.** The webapp owns a clearly-marked region of each daily note. Everything else is the user's freehand journal — never touched.
 - **Pluggable LLM.** Every LLM call goes through a gateway with a `task → provider+model` map. Run everything on a local Ollama, or reach for Claude when a task needs more capability.
 - **Hard separation of code and data.** This repo (public, MIT) contains no personal data. The vault lives in a separate, private repo.
-- **Tailscale-only access.** No public exposure. Auth is the network.
+- **Tailscale access, one deliberate exception.** Everything on the box stays tailnet-only except the LINE webhook, which cannot be — LINE will not deliver to a tailnet address. That one port is published through Tailscale Funnel and authenticated by signature verification instead of by the network. See [`docs/deploy.md`](docs/deploy.md).
 
 ## Architecture (planned)
 

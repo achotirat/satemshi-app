@@ -121,6 +121,46 @@ def test_empty_expense_categories_disable_the_question(tmp_path):
     assert config.line_bot.expense_categories == ()
 
 
+# -- vault git ----------------------------------------------------------
+
+
+def test_vault_git_is_off_unless_asked_for(tmp_path):
+    """An absent block must not start committing someone's vault."""
+    config = load_config(
+        write_config(tmp_path), env={"VAULT_PATH": str(tmp_path / "vault")}
+    )
+
+    assert config.vault_git.enabled is False
+    assert config.vault_git.auto_push is False
+    assert config.vault_git.coalesce_seconds == 300
+
+
+def test_vault_git_is_read_from_the_config(tmp_path):
+    config = load_config(
+        write_config(
+            tmp_path,
+            "vault_git:\n"
+            "  enabled: true\n"
+            "  coalesce_seconds: 60\n"
+            "  auto_push: true\n",
+        ),
+        env={"VAULT_PATH": str(tmp_path / "vault")},
+    )
+
+    assert config.vault_git.enabled is True
+    assert config.vault_git.coalesce_seconds == 60
+    assert config.vault_git.auto_push is True
+
+
+def test_a_negative_coalesce_window_becomes_immediate(tmp_path):
+    config = load_config(
+        write_config(tmp_path, "vault_git:\n  enabled: true\n  coalesce_seconds: -5\n"),
+        env={"VAULT_PATH": str(tmp_path / "vault")},
+    )
+
+    assert config.vault_git.coalesce_seconds == 0
+
+
 # -- .env loading -------------------------------------------------------
 
 

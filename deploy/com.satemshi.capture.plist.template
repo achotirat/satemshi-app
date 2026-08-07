@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. The repo path and account name below are filled in by
+  scripts/install-launchdaemon.sh, which is the supported way to install
+  this: the real values belong on your machine, not in a public repo.
+
+  A LaunchDaemon, not a LaunchAgent. An agent only runs while someone is
+  logged in, so a reboot would leave the bot down until a person sat at
+  the machine. UserName keeps the process running as you, so files it
+  writes into the vault get the right ownership.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>              <string>com.satemshi.capture</string>
+    <key>ProgramArguments</key>
+      <array><string>__REPO__/run.sh</string></array>
+    <key>WorkingDirectory</key>   <string>__REPO__</string>
+    <key>UserName</key>           <string>__USER__</string>
+    <key>RunAtLoad</key>          <true/>
+    <key>KeepAlive</key>          <true/>
+    <!-- Without this the daemon inherits a PATH with no /usr/local/bin
+         or /opt/homebrew/bin, and the vault auto-commit cannot find git. -->
+    <key>EnvironmentVariables</key>
+      <dict>
+        <key>PATH</key>
+          <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      </dict>
+    <key>StandardOutPath</key>    <string>__REPO__/logs/satemshi.log</string>
+    <key>StandardErrorPath</key>  <string>__REPO__/logs/satemshi.err</string>
+</dict>
+</plist>

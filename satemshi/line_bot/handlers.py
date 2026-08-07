@@ -28,6 +28,7 @@ from ..config import Config
 from ..models import RawEntry
 from ..photos import Photo, PhotoStore, exif_datetime, suffix_for_content_type
 from ..vault import VaultWriter
+from ..vault_git import VaultGit
 from .client import MessagingClient
 from .sessions import Session, SessionStore
 
@@ -82,8 +83,18 @@ class CaptureBot:
         self.config = config
         self.client = client
         self._now = now or (lambda: datetime.now(config.tzinfo))
-        self.vault = VaultWriter(config.vault_path, config.raw)
-        self.photos = PhotoStore(config.vault_path, config.photos, config.tzinfo)
+        # Every write into the vault is a change the git layer wants to
+        # know about; it decides whether that means a commit yet.
+        self.git = VaultGit(config.vault_path, config.vault_git)
+        self.vault = VaultWriter(
+            config.vault_path, config.raw, on_change=self.git.note_change
+        )
+        self.photos = PhotoStore(
+            config.vault_path,
+            config.photos,
+            config.tzinfo,
+            on_change=self.git.note_change,
+        )
         self.sessions = SessionStore(
             _session_dir(config.line_bot.session_dir),
             config.line_bot.session_ttl_seconds,
