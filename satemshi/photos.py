@@ -15,6 +15,7 @@ capture path dependency-free.
 from __future__ import annotations
 
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, tzinfo
 from pathlib import Path
@@ -167,10 +168,17 @@ def suffix_for_content_type(content_type: str | None) -> str:
 
 
 class PhotoStore:
-    def __init__(self, vault_path: Path, config: PhotosConfig, tz: tzinfo) -> None:
+    def __init__(
+        self,
+        vault_path: Path,
+        config: PhotosConfig,
+        tz: tzinfo,
+        on_change: Callable[[], None] | None = None,
+    ) -> None:
         self.vault_path = Path(vault_path)
         self.config = config
         self.tz = tz
+        self._on_change = on_change
 
     def attachments_dir(self, when: datetime) -> Path:
         relative = self.config.attachments_dir.format(
@@ -185,6 +193,8 @@ class PhotoStore:
         path = directory / f"{when:%Y%m%d-%H%M%S}-{name}{suffix}"
         if not path.exists():
             path.write_bytes(data)
+            if self._on_change is not None:
+                self._on_change()
         return Photo(
             path=path,
             taken_at=when,

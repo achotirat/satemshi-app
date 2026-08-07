@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -65,9 +66,21 @@ def _fields_of(lines: list[str], index: int) -> dict[str, str]:
 
 
 class VaultWriter:
-    def __init__(self, vault_path: Path, raw: RawConfig) -> None:
+    def __init__(
+        self,
+        vault_path: Path,
+        raw: RawConfig,
+        on_change: Callable[[], None] | None = None,
+    ) -> None:
         self.vault_path = Path(vault_path)
         self.raw = raw
+        # Called after a write that actually changed the note — a
+        # redelivered capture that was already there is not a change.
+        self._on_change = on_change
+
+    def _changed(self) -> None:
+        if self._on_change is not None:
+            self._on_change()
 
     # -- paths ---------------------------------------------------------
 
@@ -147,6 +160,7 @@ class VaultWriter:
         block = entry.to_markdown()
         new_zone = f"\n{body}\n{block}\n" if body else f"\n{block}\n"
         self._write_atomic(path, text[:start] + new_zone + text[end:])
+        self._changed()
         return True
 
     def add_fields(self, day: date, anchor: str, fields: dict[str, str]) -> bool:
@@ -186,6 +200,7 @@ class VaultWriter:
 
         lines[tail:tail] = additions
         self._write_atomic(path, text[:start] + "\n".join(lines) + text[end:])
+        self._changed()
         return True
 
     # -- internals -----------------------------------------------------

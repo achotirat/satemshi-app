@@ -32,7 +32,13 @@ def create_app(
                 "LINE_CHANNEL_SECRET is empty — every webhook call will be "
                 "rejected until it is set."
             )
+        # Say whether the vault is being committed at boot, rather than
+        # leaving it to be discovered a window after the first capture.
+        await bot.git.preflight()
         yield
+        # Shutdown closes an open coalescing window: commit what is in it
+        # instead of waiting for a timer that will not fire again.
+        await bot.git.aclose()
         if owns_client and hasattr(client, "aclose"):
             await client.aclose()
 
