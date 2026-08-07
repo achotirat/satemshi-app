@@ -168,7 +168,14 @@ line_bot:
   allowed_user_ids: ["Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]
 ```
 
-Restart the service. **Do this before capturing anything real** — with
+Restart the service to pick it up — `config.yaml` is read once, at
+startup:
+
+```bash
+sudo launchctl kickstart -k system/com.satemshi.capture
+```
+
+**Do this before capturing anything real** — with
 the list empty, anyone who finds the URL can write into your vault, and
 the URL is public by construction now.
 
@@ -203,7 +210,8 @@ vault_git:
   auto_push: true
 ```
 
-Restart the service. Startup now says what it will do, so a
+Restart the service (`sudo launchctl kickstart -k
+system/com.satemshi.capture`). Startup now says what it will do, so a
 misconfiguration surfaces at boot rather than five minutes into the
 first capture:
 
