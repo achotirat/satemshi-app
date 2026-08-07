@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from satemshi.config import ConfigError, load_config
@@ -117,3 +119,85 @@ def test_empty_expense_categories_disable_the_question(tmp_path):
     )
 
     assert config.line_bot.expense_categories == ()
+
+
+# -- .env loading -------------------------------------------------------
+
+
+def test_read_env_file_parses_the_shapes_people_write(tmp_path):
+    from satemshi.config import read_env_file
+
+    (tmp_path / ".env").write_text(
+        "# a comment\n"
+        "\n"
+        "VAULT_PATH=/srv/vault\n"
+        "  SPACED = value with spaces \n"
+        'QUOTED="quoted value"\n'
+        "SINGLE='single'\n"
+        "export EXPORTED=yes\n"
+        "EMPTY=\n"
+        "HASH_IN_VALUE=abc#def\n"
+        "no_equals_sign\n",
+        encoding="utf-8",
+    )
+
+    assert read_env_file(tmp_path / ".env") == {
+        "VAULT_PATH": "/srv/vault",
+        "SPACED": "value with spaces",
+        "QUOTED": "quoted value",
+        "SINGLE": "single",
+        "EXPORTED": "yes",
+        "EMPTY": "",
+        # A "#" inside a value is part of the value — secrets may hold one.
+        "HASH_IN_VALUE": "abc#def",
+    }
+
+
+def test_read_env_file_absent_is_empty(tmp_path):
+    from satemshi.config import read_env_file
+
+    assert read_env_file(tmp_path / "nope.env") == {}
+
+
+def test_apply_env_file_sets_missing_keys(tmp_path, monkeypatch):
+    from satemshi.config import apply_env_file
+
+    (tmp_path / ".env").write_text("LINE_CHANNEL_SECRET=shh\n", encoding="utf-8")
+    monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    assert apply_env_file() == ["LINE_CHANNEL_SECRET"]
+    assert os.environ["LINE_CHANNEL_SECRET"] == "shh"
+
+
+def test_the_real_environment_wins_over_the_file(tmp_path, monkeypatch):
+    from satemshi.config import apply_env_file
+
+    (tmp_path / ".env").write_text("VAULT_PATH=/from/file\n", encoding="utf-8")
+    monkeypatch.setenv("VAULT_PATH", "/from/shell")
+    monkeypatch.chdir(tmp_path)
+
+    assert apply_env_file() == []
+    assert os.environ["VAULT_PATH"] == "/from/shell"
+
+
+def test_env_file_reaches_load_config(tmp_path, monkeypatch):
+    """The bug this fixes: credentials in .env never reached the app."""
+    from satemshi.config import apply_env_file
+
+    (tmp_path / ".env").write_text(
+        f"VAULT_PATH={tmp_path / 'vault'}\n"
+        "LINE_CHANNEL_SECRET=secret-from-env-file\n"
+        "LINE_CHANNEL_ACCESS_TOKEN=token-from-env-file\n",
+        encoding="utf-8",
+    )
+    for key in ("VAULT_PATH", "LINE_CHANNEL_SECRET", "LINE_CHANNEL_ACCESS_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    apply_env_file()
+    config = load_config()
+
+    assert config.vault_path == tmp_path / "vault"
+    assert config.line_channel_secret == "secret-from-env-file"
+    assert config.line_channel_access_token == "token-from-env-file"
