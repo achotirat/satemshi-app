@@ -75,6 +75,9 @@ Then point your LINE channel's webhook at `https://<your-host>/line/webhook`
 — see [`docs/line-bot.md`](docs/line-bot.md) for the full setup, the
 command list, and how photos are found.
 
+To run it for real rather than by hand — as a service, on an always-on
+machine, reachable by LINE — see [`docs/deploy.md`](docs/deploy.md).
+
 ## Development
 
 Three checks run on every push and pull request, and all three are worth
