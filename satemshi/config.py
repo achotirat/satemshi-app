@@ -184,22 +184,31 @@ def read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def apply_env_file(path: Path | None = None) -> list[str]:
-    """Load ``.env`` into the process environment; return the keys set.
+def apply_env_file(path: Path | None = None) -> tuple[Path, list[str], list[str]]:
+    """Load ``.env`` into the process environment.
 
-    A real environment variable always wins — ``VAULT_PATH=/tmp/v python
-    -m satemshi`` overrides the file, the way every other tool that
-    reads a ``.env`` behaves. Applied to ``os.environ`` rather than
-    passed around because the bind host, port and config path are read
-    there too, and a half-loaded ``.env`` is worse than none.
+    Returns ``(path_searched, keys_applied, keys_shadowed)`` — enough for
+    the caller to say what happened, including when nothing happened.
+
+    A real environment variable wins over the file, so ``VAULT_PATH=/tmp/v
+    python -m satemshi`` still overrides it. But an *empty* one does not
+    count as set: the usual way a variable ends up empty in a shell is
+    sourcing a template that was never filled in, and honouring that
+    over the real file means the app ignores credentials that are
+    sitting right there.
     """
     path = Path.cwd() / ".env" if path is None else path
-    applied = []
+    applied: list[str] = []
+    shadowed: list[str] = []
     for key, value in read_env_file(path).items():
-        if key not in os.environ:
-            os.environ[key] = value
+        if os.environ.get(key):
+            if value:
+                shadowed.append(key)
+            continue
+        os.environ[key] = value
+        if value:
             applied.append(key)
-    return applied
+    return path, applied, shadowed
 
 
 def load_config(

@@ -166,7 +166,7 @@ def test_apply_env_file_sets_missing_keys(tmp_path, monkeypatch):
     monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
     monkeypatch.chdir(tmp_path)
 
-    assert apply_env_file() == ["LINE_CHANNEL_SECRET"]
+    assert apply_env_file()[1] == ["LINE_CHANNEL_SECRET"]
     assert os.environ["LINE_CHANNEL_SECRET"] == "shh"
 
 
@@ -177,7 +177,7 @@ def test_the_real_environment_wins_over_the_file(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_PATH", "/from/shell")
     monkeypatch.chdir(tmp_path)
 
-    assert apply_env_file() == []
+    assert apply_env_file()[1] == []
     assert os.environ["VAULT_PATH"] == "/from/shell"
 
 
@@ -201,3 +201,65 @@ def test_env_file_reaches_load_config(tmp_path, monkeypatch):
     assert config.vault_path == tmp_path / "vault"
     assert config.line_channel_secret == "secret-from-env-file"
     assert config.line_channel_access_token == "token-from-env-file"
+
+
+def test_a_blank_shell_variable_does_not_shadow_the_file(tmp_path, monkeypatch):
+    """Sourcing an unfilled .env exports blanks; the file must still win.
+
+    This is the trap that cost a real debugging session: `set -a; source
+    .env` on a template exports every key as "", and treating those as
+    "already set" makes the app ignore credentials sitting in the file.
+    """
+    from satemshi.config import apply_env_file
+
+    (tmp_path / ".env").write_text(
+        "LINE_CHANNEL_SECRET=real-secret\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "")
+    monkeypatch.chdir(tmp_path)
+
+    _, applied, shadowed = apply_env_file()
+
+    assert applied == ["LINE_CHANNEL_SECRET"]
+    assert shadowed == []
+    assert os.environ["LINE_CHANNEL_SECRET"] == "real-secret"
+
+
+def test_a_real_shell_variable_is_reported_as_shadowing(tmp_path, monkeypatch):
+    from satemshi.config import apply_env_file
+
+    (tmp_path / ".env").write_text("VAULT_PATH=/from/file\n", encoding="utf-8")
+    monkeypatch.setenv("VAULT_PATH", "/from/shell")
+    monkeypatch.chdir(tmp_path)
+
+    _, applied, shadowed = apply_env_file()
+
+    assert applied == []
+    assert shadowed == ["VAULT_PATH"]      # so the caller can say so
+    assert os.environ["VAULT_PATH"] == "/from/shell"
+
+
+def test_an_unfilled_template_applies_nothing(tmp_path, monkeypatch):
+    from satemshi.config import apply_env_file
+
+    (tmp_path / ".env").write_text(
+        "VAULT_PATH=\nLINE_CHANNEL_SECRET=\n", encoding="utf-8"
+    )
+    for key in ("VAULT_PATH", "LINE_CHANNEL_SECRET"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    path, applied, shadowed = apply_env_file()
+
+    assert (applied, shadowed) == ([], [])
+    assert path == tmp_path / ".env"       # so the caller can name the file
+
+
+def test_missing_file_reports_the_path_it_looked_at(tmp_path, monkeypatch):
+    from satemshi.config import apply_env_file
+
+    monkeypatch.chdir(tmp_path)
+    path, applied, shadowed = apply_env_file()
+
+    assert (applied, shadowed) == ([], [])
+    assert path == tmp_path / ".env" and not path.is_file()

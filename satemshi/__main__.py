@@ -14,14 +14,34 @@ from .line_bot import create_app
 def main() -> None:
     # Before anything reads the environment: .env is where the setup
     # instructions put the vault path and the LINE credentials.
-    applied = apply_env_file()
+    path, applied, shadowed = apply_env_file()
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    log = logging.getLogger(__name__)
+
+    # Say something in every case. "Found nothing" and "found everything"
+    # looked identical before, which turned a missing file into a hunt.
     if applied:
-        logging.getLogger(__name__).info(
-            "Loaded %d setting(s) from .env: %s", len(applied), ", ".join(applied)
+        log.info(
+            "Loaded %d setting(s) from %s: %s", len(applied), path, ", ".join(applied)
+        )
+    elif not path.is_file():
+        log.warning(
+            "No .env at %s — copy .env.example there and fill it in, "
+            "or set the variables in the environment.",
+            path,
+        )
+    else:
+        log.warning("%s has no values filled in.", path)
+
+    if shadowed:
+        log.warning(
+            "Ignored %s from %s: already set in the environment. Unset them "
+            "or use a fresh shell if the file is the one you meant to edit.",
+            ", ".join(shadowed),
+            path,
         )
     config = load_config()
     uvicorn.run(
