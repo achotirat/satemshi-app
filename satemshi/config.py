@@ -157,6 +157,51 @@ def _categories(raw) -> tuple[str, ...]:
     return tuple(str(category) for category in raw)
 
 
+def read_env_file(path: Path) -> dict[str, str]:
+    """Parse a ``.env`` file into a plain dict.
+
+    Deliberately small: ``KEY=value`` a line, ``#`` comments and blank
+    lines skipped, an optional ``export`` prefix tolerated, and matching
+    surrounding quotes stripped. Values are taken verbatim otherwise —
+    a ``#`` inside a value is part of the value, not a comment, because
+    secrets are allowed to contain one.
+    """
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.removeprefix("export ").strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def apply_env_file(path: Path | None = None) -> list[str]:
+    """Load ``.env`` into the process environment; return the keys set.
+
+    A real environment variable always wins — ``VAULT_PATH=/tmp/v python
+    -m satemshi`` overrides the file, the way every other tool that
+    reads a ``.env`` behaves. Applied to ``os.environ`` rather than
+    passed around because the bind host, port and config path are read
+    there too, and a half-loaded ``.env`` is worse than none.
+    """
+    path = Path.cwd() / ".env" if path is None else path
+    applied = []
+    for key, value in read_env_file(path).items():
+        if key not in os.environ:
+            os.environ[key] = value
+            applied.append(key)
+    return applied
+
+
 def load_config(
     path: Path | None = None, env: dict[str, str] | None = None
 ) -> Config:

@@ -63,6 +63,14 @@ pytest
 python -m satemshi             # serves /line/webhook and /healthz
 ```
 
+`python -m satemshi` reads `.env` from the directory you run it in, and
+logs which settings it picked up. A real environment variable wins over
+the file, so `VAULT_PATH=/tmp/scratch-vault python -m satemshi` is a
+safe way to try something without editing anything.
+
+Note that the server runs in the foreground — check `/healthz` from a
+second terminal, not the one it is running in.
+
 Then point your LINE channel's webhook at `https://<your-host>/line/webhook`
 — see [`docs/line-bot.md`](docs/line-bot.md) for the full setup, the
 command list, and how photos are found.
