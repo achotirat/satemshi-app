@@ -15,6 +15,21 @@ raw:
   start_marker: "<!-- raw:start -->"
   end_marker: "<!-- raw:end -->"
 
+# The JOURNAL zone of a daily note: the day in your own words, sent from
+# LINE with "journal <text>" or a "journal" session. Same contract as
+# RAW — only the bytes between these markers are ever touched — but what
+# lands here is prose, kept exactly as it was typed. All four markers
+# must differ from each other; the app refuses to start otherwise.
+# Put the markers in your daily-note template to fix where the zone
+# sits; without them the bot appends one at the end of the note.
+journal:
+  heading: "## Journal"
+  start_marker: "<!-- journal:start -->"
+  end_marker: "<!-- journal:end -->"
+  # Prefix each line with the time it was sent. false for a journal that
+  # reads as continuous prose rather than as a log of the day.
+  timestamps: true
+
 # LINE Bot capture channel.
 line_bot:
   enabled: true

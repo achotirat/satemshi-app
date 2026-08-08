@@ -4,7 +4,7 @@
 
 A personal assistant + second brain that **captures** moments during the day (links, mood, people met, priorities, to-buy list) and **ingests** them into an Obsidian vault as a structured wiki — using a swappable LLM backend (local Ollama, Claude API, or other providers) per task.
 
-> Status: **Phase 1 — first capture channel.** A LINE Bot captures today's events and photos into the vault's RAW zone. See [`docs/line-bot.md`](docs/line-bot.md).
+> Status: **Phase 1 — first capture channel.** A LINE Bot captures today's events, photos and expenses into the vault's RAW zone, and writes the daily note itself into its JOURNAL zone. See [`docs/line-bot.md`](docs/line-bot.md).
 
 ## Why this exists
 
@@ -19,7 +19,7 @@ The framework is sharable. The data is yours.
 ## Design principles
 
 - **Vault-first.** The Obsidian vault is the database. There is no other store.
-- **Two-zone Daily Notes.** The webapp owns a clearly-marked region of each daily note. Everything else is the user's freehand journal — never touched.
+- **Marked zones in Daily Notes.** The app owns clearly-marked regions of each daily note — `RAW` for captures as data, `JOURNAL` for the day written in prose — and only ever changes the bytes between their markers. Everything else in the note is the user's, and is never touched.
 - **Pluggable LLM.** Every LLM call goes through a gateway with a `task → provider+model` map. Run everything on a local Ollama, or reach for Claude when a task needs more capability.
 - **Hard separation of code and data.** This repo (public, MIT) contains no personal data. The vault lives in a separate, private repo.
 - **Tailscale access, one deliberate exception.** Everything on the box stays tailnet-only except the LINE webhook, which cannot be — LINE will not deliver to a tailnet address. That one port is published through Tailscale Funnel and authenticated by signature verification instead of by the network. See [`docs/deploy.md`](docs/deploy.md).
@@ -45,7 +45,7 @@ See `docs/foundation.md` for the full picture (forthcoming).
 ## Status & phasing
 
 - **Phase 0 (done):** repo skeleton, license, secret-scan hooks, vault conventions documented.
-- **Phase 1 (current):** capture skeleton, no LLM yet. The [LINE Bot](docs/line-bot.md) captures events and photos into the daily note's RAW zone; links, priorities and the to-buy list follow.
+- **Phase 1 (current):** capture skeleton, no LLM yet. The [LINE Bot](docs/line-bot.md) captures events, photos and expenses into the daily note's RAW zone, and is the channel for writing the note's JOURNAL zone by hand; links, priorities and the to-buy list follow.
 - **Phase 2:** LLM-powered captures (mood check-in question generator, people-met entity suggestions).
 - **Phase 3:** nightly ingest pipeline (wiki summary + entity extraction + index updates).
 

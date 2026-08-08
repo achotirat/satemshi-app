@@ -58,6 +58,25 @@ class RawConfig:
 
 
 @dataclass(frozen=True)
+class JournalConfig:
+    """The JOURNAL zone of a daily note — the day in the user's own words.
+
+    A second machine-owned zone, on exactly the same terms as RAW: only
+    the bytes between the markers are ever touched. What lands here is
+    prose, not data — the text as it was typed, no follow-up questions
+    and no ``key:: value`` fields — so the daily note can be *written*
+    from the phone and not only captured into.
+    """
+
+    start_marker: str = "<!-- journal:start -->"
+    end_marker: str = "<!-- journal:end -->"
+    heading: str = "## Journal"
+    # Stamp every line with the time it was sent. Off for a journal that
+    # reads as continuous prose rather than as a log of the day.
+    timestamps: bool = True
+
+
+@dataclass(frozen=True)
 class PhotosConfig:
     """Where photos are stored, and where to look for today's ones."""
 
@@ -116,6 +135,7 @@ class Config:
     vault_path: Path
     timezone: str = DEFAULT_TIMEZONE
     raw: RawConfig = field(default_factory=RawConfig)
+    journal: JournalConfig = field(default_factory=JournalConfig)
     photos: PhotosConfig = field(default_factory=PhotosConfig)
     line_bot: LineBotConfig = field(default_factory=LineBotConfig)
     vault_git: VaultGitConfig = field(default_factory=VaultGitConfig)
@@ -174,6 +194,29 @@ def _categories(raw) -> tuple[str, ...]:
             "[food, transport]"
         )
     return tuple(str(category) for category in raw)
+
+
+def _check_markers(raw: RawConfig, journal: JournalConfig) -> None:
+    """Two zones in one file need four distinct, non-empty markers.
+
+    A shared or blank marker is not a cosmetic mistake: zone boundaries
+    are found by substring search, so it would have one zone's write
+    land inside — or straddle — the other's, in the user's own notes.
+    """
+    markers = {
+        "raw.start_marker": raw.start_marker,
+        "raw.end_marker": raw.end_marker,
+        "journal.start_marker": journal.start_marker,
+        "journal.end_marker": journal.end_marker,
+    }
+    for name, marker in markers.items():
+        if not marker.strip():
+            raise ConfigError(f"{name} must not be empty")
+    if len(set(markers.values())) != len(markers):
+        raise ConfigError(
+            "the raw and journal markers must all differ from each other — "
+            f"got {sorted(set(markers.values()))}"
+        )
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -245,8 +288,23 @@ def load_config(
         )
 
     raw_data = data.get("raw") or {}
+    journal_data = data.get("journal") or {}
     photos_data = data.get("photos") or {}
     bot_data = data.get("line_bot") or {}
+
+    raw = RawConfig(
+        start_marker=raw_data.get("start_marker", RawConfig.start_marker),
+        end_marker=raw_data.get("end_marker", RawConfig.end_marker),
+        heading=raw_data.get("heading", RawConfig.heading),
+        daily_notes_dir=raw_data.get("daily_notes_dir", RawConfig.daily_notes_dir),
+    )
+    journal = JournalConfig(
+        start_marker=journal_data.get("start_marker", JournalConfig.start_marker),
+        end_marker=journal_data.get("end_marker", JournalConfig.end_marker),
+        heading=journal_data.get("heading", JournalConfig.heading),
+        timestamps=bool(journal_data.get("timestamps", JournalConfig.timestamps)),
+    )
+    _check_markers(raw, journal)
 
     extensions = photos_data.get("extensions")
     photos = PhotosConfig(
@@ -292,14 +350,8 @@ def load_config(
     return Config(
         vault_path=Path(vault_raw).expanduser(),
         timezone=data.get("timezone", DEFAULT_TIMEZONE),
-        raw=RawConfig(
-            start_marker=raw_data.get("start_marker", RawConfig.start_marker),
-            end_marker=raw_data.get("end_marker", RawConfig.end_marker),
-            heading=raw_data.get("heading", RawConfig.heading),
-            daily_notes_dir=raw_data.get(
-                "daily_notes_dir", RawConfig.daily_notes_dir
-            ),
-        ),
+        raw=raw,
+        journal=journal,
         photos=photos,
         line_bot=line_bot,
         vault_git=vault_git,

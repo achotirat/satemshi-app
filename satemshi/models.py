@@ -1,4 +1,10 @@
-"""The one shape everything writes into the vault: a RAW entry."""
+"""The two shapes anything writes into the vault.
+
+A :class:`RawEntry` is a captured moment as data — one line, plus
+``key:: value`` fields the nightly ingest reads without parsing prose. A
+:class:`JournalEntry` is the opposite: the day as the user wrote it, kept
+verbatim, for a person to read.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +31,22 @@ def flatten_text(text: str) -> str:
     """
     parts = (part.strip() for part in str(text).splitlines())
     return " / ".join(part for part in parts if part)
+
+
+def trim_lines(text: str) -> str:
+    """Trailing whitespace off every line, blank lines off both ends.
+
+    Prose keeps its shape — a message sent as three lines stays three
+    lines — but the text must not *end* blank: a block id belongs to the
+    paragraph it sits in, and a trailing empty line would hand it to a
+    paragraph of its own.
+    """
+    lines = [line.rstrip() for line in str(text).splitlines()]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
 
 
 @dataclass
@@ -55,3 +77,29 @@ class RawEntry:
                 continue
             lines.append(f"    - {key}:: {value}")
         return "\n".join(lines)
+
+
+@dataclass
+class JournalEntry:
+    """One line of the day's journal, in the user's own words.
+
+    Prose, not data: no kind, no fields, and newlines survive — the
+    JOURNAL zone is written for a person to read, and the ingest quotes
+    it rather than parsing it. It still carries a block id, which earns
+    its keep twice: a redelivered LINE message finds its own id already
+    in the note and writes nothing, and the wiki can embed the exact
+    paragraph (``![[2026-08-04#^journal-abc]]``).
+    """
+
+    at: datetime
+    text: str
+    entry_id: str
+
+    @property
+    def anchor(self) -> str:
+        return f"journal-{block_id(self.entry_id)}"
+
+    def to_markdown(self, timestamps: bool = True) -> str:
+        body = trim_lines(self.text) or "(empty)"
+        stamp = f"**{self.at:%H:%M}** — " if timestamps else ""
+        return f"{stamp}{body} ^{self.anchor}"
