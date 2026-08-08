@@ -186,6 +186,10 @@ the file to exist under `Daily Notes/`. Silence means the event either
 never arrived or failed on arrival; `logs/satemshi.err` distinguishes
 the two.
 
+Then send `journal first line` — same note, `→ JOURNAL`, and a second
+marked zone in the file. That is the other half of the channel: captures
+in RAW, the day in your own words in JOURNAL.
+
 ## 7. Give the vault a history
 
 Captures now live on exactly one disk, with no way back from a bad edit.

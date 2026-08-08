@@ -1,4 +1,4 @@
-"""Turning LINE webhook events into RAW captures.
+"""Turning LINE webhook events into daily-note writes.
 
 The flow the bot runs, in one place:
 
@@ -9,7 +9,9 @@ The flow the bot runs, in one place:
 - ``photos`` sweeps today's photos — the ones sent to the bot and the
   ones sitting in the configured source directories — and records any
   that are not in RAW yet;
-- ``today`` reads back what has been captured so far.
+- ``journal`` writes the day itself: one line, or a whole session of
+  them, straight into the note's JOURNAL zone with no questions asked;
+- ``today`` reads back both zones.
 
 Every branch writes to the vault *before* it replies: a capture that
 made it to disk is not lost just because the reply token expired.
@@ -25,9 +27,9 @@ from datetime import date, datetime
 from pathlib import Path
 
 from ..config import Config
-from ..models import RawEntry
+from ..models import JournalEntry, RawEntry, flatten_text
 from ..photos import Photo, PhotoStore, exif_datetime, suffix_for_content_type
-from ..vault import VaultWriter
+from ..vault import VaultError, VaultWriter
 from ..vault_git import VaultGit
 from .client import MessagingClient
 from .sessions import Session, SessionStore
@@ -38,6 +40,11 @@ SKIP_TOKENS = {"-", "skip", "ข้าม"}
 NEXT_TOKENS = {"next", "ถัดไป"}
 SPENT_COMMANDS = {"spent", "spend", "จ่าย"}
 SLIP_TOKENS = {"slip", "สลิป"}
+JOURNAL_COMMANDS = {"journal", "diary", "บันทึก", "ไดอารี่"}
+
+# A journal line already in the note, as it reads in a chat readback:
+# the block id is machinery, not something anyone wants to see quoted.
+_JOURNAL_ANCHOR_RE = re.compile(r" \^journal-[A-Za-z0-9-]+")
 
 # The three things an expense needs, asked in this order (minus whatever
 # was already said inline or is disabled in config).
@@ -55,12 +62,16 @@ _AMOUNT_RE = re.compile(
 )
 
 HELP_TEXT = (
-    "Send me anything about today and it lands in your vault's RAW zone.\n\n"
+    "Send me anything about today and it lands in your vault's daily "
+    "note — captures in the RAW zone, your own writing in the JOURNAL "
+    "zone.\n\n"
     "• any text — starts an event capture, then I ask a few follow-ups\n"
     "• a photo — saved to the vault and recorded in RAW\n"
     "• a location — recorded, or used as the answer to “where”\n\n"
     "Commands:\n"
-    "• today — read back today's RAW zone\n"
+    "• journal <text> — write that into today's journal, as you typed it\n"
+    "• journal — open the journal: every message goes in until “done”\n"
+    "• today — read back today's captures and journal\n"
     "• photos — find today's photos, then ask about each one\n"
     "• spent <amount> <what> — record an expense, then pick a category\n"
     "• expenses — today's spending by category\n"
@@ -87,7 +98,10 @@ class CaptureBot:
         # know about; it decides whether that means a commit yet.
         self.git = VaultGit(config.vault_path, config.vault_git)
         self.vault = VaultWriter(
-            config.vault_path, config.raw, on_change=self.git.note_change
+            config.vault_path,
+            config.raw,
+            on_change=self.git.note_change,
+            journal=config.journal,
         )
         self.photos = PhotoStore(
             config.vault_path,
@@ -110,7 +124,7 @@ class CaptureBot:
         if event_type == "follow":
             await self._reply(
                 event,
-                "Connected. I capture into your vault's RAW zone.\n"
+                "Connected. I write into your vault's daily notes.\n"
                 f"Your LINE user id is {user_id or 'unknown'} — add it to "
                 "line_bot.allowed_user_ids in config.yaml.\n\n" + HELP_TEXT,
             )
@@ -168,6 +182,9 @@ class CaptureBot:
             if command == "today":
                 await self._reply(event, self._today_summary())
                 return
+            if command in JOURNAL_COMMANDS:
+                await self._journal(event, user_id, argument)
+                return
             if command == "photos":
                 await self._reply(event, self._sweep_photos(user_id))
                 return
@@ -180,12 +197,15 @@ class CaptureBot:
             if command == "cancel":
                 if user_id:
                     self.sessions.clear(user_id)
-                await self._reply(
-                    event,
-                    "Dropped. Nothing was written."
-                    if session is not None
-                    else "Nothing in progress.",
-                )
+                if session is None:
+                    await self._reply(event, "Nothing in progress.")
+                elif session.kind == "journal":
+                    # Journal lines are written as they arrive, so there
+                    # is no draft here to throw away — say so rather than
+                    # claiming nothing was written.
+                    await self._reply(event, self._journal_closed())
+                else:
+                    await self._reply(event, "Dropped. Nothing was written.")
                 return
             if command == "note":
                 await self._capture_note(event, user_id, argument or "(empty note)")
@@ -199,6 +219,9 @@ class CaptureBot:
                     await self._finish_photo_queue(event, session)
                 elif session.kind == "expense":
                     await self._finalise_expense(event, session)
+                elif session.kind == "journal":
+                    self.sessions.clear(session.user_id)
+                    await self._reply(event, self._journal_closed())
                 else:
                     await self._finalise(event, session)
                 return
@@ -210,6 +233,10 @@ class CaptureBot:
                 await self._answer_photo_slot(event, session, body)
             elif session.kind == "expense":
                 await self._answer_expense_slot(event, session, body)
+            elif session.kind == "journal":
+                # Journal mode: the message *is* the entry. Nothing is
+                # parsed out of it, so send it as you'd write it.
+                await self._write_journal(event, _entry_id(event), text, session)
             else:
                 await self._answer_slot(event, session, body)
             return
@@ -300,6 +327,120 @@ class CaptureBot:
                 entry_id=_entry_id(event),
                 fields=self._with_source({}, user_id),
             ),
+        )
+
+    # -- the journal ---------------------------------------------------
+
+    async def _journal(self, event: dict, user_id: str | None, text: str) -> None:
+        """``journal <text>`` writes one line; ``journal`` opens the mode.
+
+        The mode exists because writing the day up is not one message: it
+        is a handful of them, five minutes apart, and prefixing every one
+        with "journal" is friction in exactly the place that needs none.
+        """
+        session = self.sessions.get(user_id) if user_id else None
+        journalling = session is not None and session.kind == "journal"
+
+        if text:
+            # One line needs no session of its own, so it is safe even
+            # mid-capture — it touches the other zone and asks nothing.
+            await self._write_journal(
+                event, _entry_id(event), text, session if journalling else None
+            )
+            return
+
+        if user_id is None:
+            # No user to keep a session for; one-shot writing still works.
+            await self._reply(
+                event, "Send “journal <text>” and I'll write it into today's note."
+            )
+            return
+
+        if session is not None and not journalling:
+            await self._reply(event, _busy_message(session, "open the journal"))
+            return
+
+        today = self._now().date()
+        if session is not None:
+            self.sessions.save(session)  # a re-open is a keep-alive
+            await self._reply(
+                event,
+                f"The journal is already open — {self._journal_count(today)} "
+                "line(s) in it today. Keep writing, or “done”.",
+            )
+            return
+
+        self.sessions.save(
+            Session(
+                user_id=user_id,
+                entry_id=_entry_id(event),
+                title="journal",
+                kind="journal",
+            )
+        )
+        note = self.vault.daily_note_path(today).name
+        await self._reply(
+            event,
+            f"Journal open for {note} — every message goes in as you typed "
+            "it, no questions.\n“done” closes it; slash a command (“/today”, "
+            "“/note …”) to run it without closing.",
+        )
+
+    async def _write_journal(
+        self,
+        event: dict,
+        entry_id: str,
+        text: str,
+        session: Session | None = None,
+    ) -> None:
+        when = self._now()
+        entry = JournalEntry(at=when, text=text, entry_id=entry_id)
+        try:
+            written = self.vault.append_journal(entry, day=when.date())
+        except VaultError as exc:
+            # The user's own note is in a state only they can fix, and
+            # the message says how — pass it on instead of swallowing it.
+            logger.warning("Journal write refused: %s", exc)
+            await self._reply(event, f"I couldn't write that line: {exc}")
+            return
+        except OSError:
+            logger.exception("Could not write to the journal")
+            await self._reply(
+                event, "I couldn't write to the vault — that line was not saved."
+            )
+            return
+
+        if not written:
+            return  # A redelivered event; already in the note.
+
+        note = self.vault.daily_note_path(when.date()).name
+        count = self._journal_count(when.date())
+        if session is not None:
+            self.sessions.save(session)  # keeps the mode alive and the ttl fresh
+            await self._reply(
+                event, f"In the journal, {when:%H:%M} — {count} line(s) today."
+            )
+            return
+        await self._reply(
+            event,
+            f"Saved to {note} → JOURNAL\n{when:%H:%M} — "
+            f"{_shorten(flatten_text(text))}",
+        )
+
+    def _journal_count(self, day: date) -> int:
+        """How many lines today's journal holds, counted from the note.
+
+        The note is the only tally worth trusting: it survives a restart,
+        and it counts the one-shot lines and yesterday's leftovers the
+        same way it counts this session's.
+        """
+        return self.vault.read_journal(day).count("^journal-")
+
+    def _journal_closed(self) -> str:
+        count = self._journal_count(self._now().date())
+        return (
+            f"Journal closed — {count} line(s) in today's note. "
+            "Everything you sent is already in it; edit it in Obsidian."
         )
 
     # -- image ---------------------------------------------------------
@@ -404,10 +545,21 @@ class CaptureBot:
     def _today_summary(self) -> str:
         today = self._now().date()
         zone = self.vault.read_raw_zone(today)
-        if not zone:
+        journal = self.vault.read_journal(today)
+        if not zone and not journal:
             return f"Nothing captured for {today.isoformat()} yet."
-        count = sum(1 for line in zone.splitlines() if line.startswith("- "))
-        return f"{today.isoformat()} — {count} capture(s):\n\n{zone}"
+
+        parts: list[str] = []
+        if zone:
+            count = sum(1 for line in zone.splitlines() if line.startswith("- "))
+            parts.append(f"{today.isoformat()} — {count} capture(s):\n\n{zone}")
+        else:
+            parts.append(f"{today.isoformat()} — nothing captured in RAW yet.")
+        if journal:
+            lines = journal.count("^journal-")
+            body = _JOURNAL_ANCHOR_RE.sub("", journal)
+            parts.append(f"Journal — {lines} line(s):\n\n{body}")
+        return "\n\n".join(parts)
 
     def _sweep_photos(self, user_id: str | None) -> str:
         today = self._now().date()
@@ -450,10 +602,7 @@ class CaptureBot:
 
         existing = self.sessions.get(user_id)
         if existing is not None and existing.kind != "photo":
-            return (
-                "\n\nYou're mid-capture — finish it (“done”) or drop it "
-                "(“cancel”), then run “photos” again to go through these."
-            )
+            return "\n\n" + _busy_message(existing, "run “photos” again")
         if existing is not None:
             # Re-running "photos" mid-queue: keep what has been answered
             # for the current photo before the queue is rebuilt.
@@ -691,13 +840,12 @@ class CaptureBot:
     async def _start_expense(
         self, event: dict, user_id: str | None, text: str
     ) -> None:
-        if user_id and self.sessions.get(user_id) is not None:
+        open_session = self.sessions.get(user_id) if user_id else None
+        if open_session is not None:
             # Starting a new flow would silently clobber the open one
             # (one session per user) and lose its answers. Refuse.
             await self._reply(
-                event,
-                "You're mid-capture — “done” finishes it, “cancel” drops "
-                "it. Then record the expense.",
+                event, _busy_message(open_session, "record the expense")
             )
             return
 
@@ -833,6 +981,12 @@ class CaptureBot:
         day = (day_hint or entry.at).date()
         try:
             written = self.vault.append(entry, day=day)
+        except VaultError as exc:
+            # Broken markers in the note: only the user can fix that, so
+            # tell them rather than losing the capture in a server log.
+            logger.warning("Capture refused: %s", exc)
+            await self._reply(event, f"I couldn't write that capture: {exc}")
+            return
         except OSError:
             logger.exception("Could not write to the vault")
             await self._reply(
@@ -864,6 +1018,21 @@ class CaptureBot:
                 await self.client.push(user_id, text)
         except Exception:  # the capture is already on disk
             logger.exception("Could not reply to LINE event")
+
+
+def _busy_message(session: Session, action: str) -> str:
+    """Why a command was refused, in terms of what is actually open."""
+    if session.kind == "journal":
+        return f"The journal is open — “done” closes it, then {action}."
+    return (
+        "You're mid-capture — “done” finishes it, “cancel” drops it. "
+        f"Then {action}."
+    )
+
+
+def _shorten(text: str, limit: int = 120) -> str:
+    """Echo a long journal line back as its opening, not in full."""
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def _pending_of(photo: dict) -> list[str]:

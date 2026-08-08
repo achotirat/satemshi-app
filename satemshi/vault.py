@@ -1,10 +1,18 @@
-"""Writing into the vault's RAW zone.
+"""Writing into a daily note's machine-owned zones.
 
-The vault is the database, and the user's freehand journal shares the
+The vault is the database, and the user's freehand writing shares the
 same file as our captures. So every write here obeys one rule: only the
-bytes between the RAW markers may change. If the markers are missing we
+bytes between a zone's markers may change. If the markers are missing we
 append a fresh zone at the end of the note; we never reflow, reorder or
 rewrite anything else in the file.
+
+There are two such zones, written the same way and read differently:
+
+- **RAW** takes captures as data — one line per entry, ``key:: value``
+  fields under it, for the nightly ingest to read;
+- **JOURNAL** takes the day as prose, verbatim, for a person to read.
+
+Everything outside both is the user's, and is never touched.
 """
 
 from __future__ import annotations
@@ -17,8 +25,14 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from .config import RawConfig
-from .models import RawEntry, flatten_text
+from .config import JournalConfig, RawConfig
+from .models import JournalEntry, RawEntry, flatten_text
+
+# A zone's markers are found by substring search, so user text that
+# happens to contain one would move the boundary — or unbalance it — and
+# take a chunk of the note with it. A zero-width space breaks the
+# literal without changing how the line reads in Obsidian.
+_ZERO_WIDTH = "\u200b"
 
 
 class VaultError(RuntimeError):
@@ -40,6 +54,10 @@ class ZoneEntry:
     title: str
     time: str
     fields: dict[str, str]
+
+
+def _zone_name(zone: RawConfig | JournalConfig) -> str:
+    return "JOURNAL" if isinstance(zone, JournalConfig) else "RAW"
 
 
 def _find_anchor(lines: list[str], anchor: str) -> int | None:
@@ -71,9 +89,11 @@ class VaultWriter:
         vault_path: Path,
         raw: RawConfig,
         on_change: Callable[[], None] | None = None,
+        journal: JournalConfig | None = None,
     ) -> None:
         self.vault_path = Path(vault_path)
         self.raw = raw
+        self.journal = journal or JournalConfig()
         # Called after a write that actually changed the note — a
         # redelivered capture that was already there is not a change.
         self._on_change = on_change
@@ -95,12 +115,19 @@ class VaultWriter:
 
     def read_raw_zone(self, day: date) -> str:
         """Return the RAW zone body for ``day`` ("" when there is none)."""
+        return self._read_zone(day, self.raw)
+
+    def read_journal(self, day: date) -> str:
+        """Return the JOURNAL zone body for ``day`` ("" when there is none)."""
+        return self._read_zone(day, self.journal)
+
+    def _read_zone(self, day: date, zone: RawConfig | JournalConfig) -> str:
         path = self.daily_note_path(day)
         if not path.is_file():
             return ""
         text = path.read_text(encoding="utf-8")
         try:
-            start, end = self._zone_bounds(text)
+            start, end = self._zone_bounds(text, zone)
         except LookupError:
             return ""
         return text[start:end].strip("\n")
@@ -147,18 +174,51 @@ class VaultWriter:
 
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         try:
-            start, end = self._zone_bounds(text)
+            start, end = self._zone_bounds(text, self.raw)
         except LookupError:
-            text = self._append_zone(text, day)
-            start, end = self._zone_bounds(text)
+            text = self._append_zone(text, self.raw)
+            start, end = self._zone_bounds(text, self.raw)
 
         zone = text[start:end]
         if f"^{entry.anchor}" in zone:
             return False
 
         body = zone.strip("\n")
-        block = entry.to_markdown()
+        block = self._neutralise_markers(entry.to_markdown())
         new_zone = f"\n{body}\n{block}\n" if body else f"\n{block}\n"
+        self._write_atomic(path, text[:start] + new_zone + text[end:])
+        self._changed()
+        return True
+
+    def append_journal(self, entry: JournalEntry, day: date | None = None) -> bool:
+        """Append one journal paragraph to the JOURNAL zone.
+
+        Returns ``False`` when a paragraph with the same anchor is
+        already there, so a redelivered message is written once — the
+        same guard the RAW zone gets, and the reason a journal line
+        carries a block id at all.
+        """
+        day = day or entry.at.date()
+        path = self.daily_note_path(day)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        try:
+            start, end = self._zone_bounds(text, self.journal)
+        except LookupError:
+            text = self._append_zone(text, self.journal)
+            start, end = self._zone_bounds(text, self.journal)
+
+        zone = text[start:end]
+        if f"^{entry.anchor}" in zone:
+            return False
+
+        body = zone.strip("\n")
+        block = self._neutralise_markers(entry.to_markdown(self.journal.timestamps))
+        # Blank line between paragraphs: each one has to be its own
+        # markdown block for its ^id to identify it and not its
+        # predecessor — and prose wants the breathing room anyway.
+        new_zone = f"\n{body}\n\n{block}\n" if body else f"\n{block}\n"
         self._write_atomic(path, text[:start] + new_zone + text[end:])
         self._changed()
         return True
@@ -175,7 +235,7 @@ class VaultWriter:
             return False
         text = path.read_text(encoding="utf-8")
         try:
-            start, end = self._zone_bounds(text)
+            start, end = self._zone_bounds(text, self.raw)
         except LookupError:
             return False
 
@@ -191,7 +251,7 @@ class VaultWriter:
             if "::" in line
         }
         additions = [
-            f"    - {key}:: {flatten_text(value)}"
+            self._neutralise_markers(f"    - {key}:: {flatten_text(value)}")
             for key, value in fields.items()
             if flatten_text(value) and key not in existing
         ]
@@ -205,32 +265,54 @@ class VaultWriter:
 
     # -- internals -----------------------------------------------------
 
-    def _zone_bounds(self, text: str) -> tuple[int, int]:
+    def _zone_bounds(
+        self, text: str, zone: RawConfig | JournalConfig
+    ) -> tuple[int, int]:
         """Character bounds of the zone body, exclusive of the markers."""
-        start_marker = self.raw.start_marker
-        end_marker = self.raw.end_marker
+        start_marker = zone.start_marker
+        end_marker = zone.end_marker
+        name = _zone_name(zone)
         start = text.find(start_marker)
         end = text.find(end_marker)
         if start == -1 and end == -1:
-            raise LookupError("no RAW zone")
+            raise LookupError(f"no {name} zone")
         if start == -1 or end == -1 or end < start:
             raise VaultError(
-                "RAW zone markers are unbalanced in this note; fix them by "
-                f"hand before capturing again ({start_marker} / {end_marker})"
+                f"{name} zone markers are unbalanced in this note; fix them "
+                f"by hand before capturing again ({start_marker} / {end_marker})"
             )
         return start + len(start_marker), end
 
-    def _append_zone(self, text: str, day: date) -> str:
+    def _append_zone(self, text: str, zone: RawConfig | JournalConfig) -> str:
         prefix = ""
         if text and not text.endswith("\n"):
             prefix = "\n"
         if text.strip():
             prefix += "\n"
-        heading = f"{self.raw.heading}\n\n" if self.raw.heading else ""
+        heading = f"{zone.heading}\n\n" if zone.heading else ""
         return (
             f"{text}{prefix}{heading}"
-            f"{self.raw.start_marker}\n{self.raw.end_marker}\n"
+            f"{zone.start_marker}\n{zone.end_marker}\n"
         )
+
+    def _neutralise_markers(self, text: str) -> str:
+        """Defuse any zone marker the user's own text happens to contain.
+
+        Chat text is not trusted to stay out of the way: a message
+        carrying ``<!-- raw:end -->`` would otherwise be read as the end
+        of a zone, and the next write would land outside it. Breaking the
+        literal with a zero-width space costs the note nothing — it reads
+        exactly as it was typed.
+        """
+        for marker in (
+            self.raw.start_marker,
+            self.raw.end_marker,
+            self.journal.start_marker,
+            self.journal.end_marker,
+        ):
+            if len(marker) > 1 and marker in text:
+                text = text.replace(marker, f"{marker[:1]}{_ZERO_WIDTH}{marker[1:]}")
+        return text
 
     @staticmethod
     def _write_atomic(path: Path, text: str) -> None:

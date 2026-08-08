@@ -420,7 +420,7 @@ def test_photos_mid_event_capture_does_not_clobber(make_config, now, tmp_path):
 
     send(bot, text_event("Team lunch", "e1"))  # event capture opens
     send(bot, text_event("/photos", "e2"))
-    assert "finish it" in client.last_reply
+    assert "mid-capture" in client.last_reply
 
     send(bot, text_event("12:30", "e3"))  # still answering the event
     assert "Who was there?" in client.last_reply
